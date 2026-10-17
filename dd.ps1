@@ -5,7 +5,7 @@
 #   deploy  - Deploy to Google App Engine
 #   run     - Run the local development server
 #   test    - Run all tests using pytest
-#   gen     - Generate favicons and social image from the source logo
+#   gen     - Generate the logo, favicons, social image and BASIC sample previews
 
 param(
     [Parameter(Position=0)]
@@ -40,7 +40,7 @@ function Show-Help {
     Write-Host "  deploy         - Deploy to Google App Engine"
     Write-Host "  run            - Run the local development server"
     Write-Host "  test           - Run all tests using pytest"
-    Write-Host "  gen            - Generate favicons and social image from the source logo"
+    Write-Host "  gen            - Generate the logo, favicons, social image and BASIC sample previews"
     Write-Host "  crt            - Deploy CRT files to Cloud Storage"
     Write-Host "  format         - Format Python files with Black"
     Write-Host "  format -Check  - Report badly formatted files without changing them"
@@ -209,7 +209,7 @@ function Test-Deployment {
     Write-Host "Verifying deployment..." -ForegroundColor Yellow
 
     $base = "https://$TARGET_PROJECT.appspot.com"
-    $paths = @("/", "/asm", "/hardware", "/memmap", "/sid", "/about", "/robots.txt", "/sitemap.xml")
+    $paths = @("/", "/asm", "/games", "/hardware", "/memmap", "/sid", "/about", "/robots.txt", "/sitemap.xml")
     $failed = @()
 
     foreach ($path in $paths) {
@@ -285,15 +285,22 @@ function Invoke-Run {
 
 function Invoke-Gen {
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  Generating Icons" -ForegroundColor Cyan
+    Write-Host "  Generating Icons and Sample Previews" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
 
     $VenvPython = Get-VenvPython
     $genFavicons = Join-Path $ScriptRoot "tools\gen_favicons.py"
+    $genPreviews = Join-Path $ScriptRoot "tools\gen_sample_previews.py"
 
     Write-Host "Running gen_favicons.py..." -ForegroundColor Yellow
     & $VenvPython $genFavicons
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host ""
+        Write-Host "Recording BASIC sample previews on the emulator..." -ForegroundColor Yellow
+        & $VenvPython $genPreviews
+    }
 
     if ($LASTEXITCODE -eq 0) {
         Write-Host ""
@@ -313,11 +320,12 @@ function Invoke-Test {
 
     $VenvPython = Get-VenvPython
     
-    # Check if pytest is installed, install if not
-    & $VenvPython -m pytest --version 2>&1 | Out-Null
+    # Install the test packages if any is missing. Pillow reads the recorded
+    # sample previews.
+    & $VenvPython -c "import pytest, py_mini_racer, PIL" 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "pytest not found. Installing..." -ForegroundColor Yellow
-        & $VenvPython -m pip install pytest py_mini_racer
+        Write-Host "Test packages missing. Installing..." -ForegroundColor Yellow
+        & $VenvPython -m pip install pytest py_mini_racer pillow
     }
     
     $testsDir = Join-Path $ScriptRoot "tests"

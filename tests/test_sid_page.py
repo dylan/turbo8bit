@@ -226,3 +226,62 @@ def test_track_change_failure_is_reported_without_stopping_playback(sid_page):
     assert "could not" in ctx.eval(
         "document.getElementById('player-status').textContent"
     )
+
+
+def mix_button(kind, voice):
+    return (
+        "{ dataset: { voice: '%d' }, closest() { return this; },"
+        " classList: { contains: name => name === 'voice-%s' } }" % (voice, kind)
+    )
+
+
+def test_mute_and_solo_silence_voices_in_the_player(sid_page):
+    ctx = sid_page
+    ctx.eval(
+        """
+        loads[0].resolve();
+        var silenced = [false, false, false];
+        playerInstance.setVoiceMuted = (voice, muted) => { silenced[voice] = muted; };
+        var mixClick = document.getElementById('voice-visualizer').listeners.click;
+        """
+    )
+    ctx.eval(f"mixClick({{ target: {mix_button('mute', 0)} }});")
+    assert ctx.eval("JSON.stringify(silenced)") == "[true,false,false]"
+    ctx.eval(f"mixClick({{ target: {mix_button('solo', 2)} }});")
+    assert ctx.eval("JSON.stringify(silenced)") == "[true,true,false]"
+    # Leaving solo restores the voices that were not muted.
+    ctx.eval(f"mixClick({{ target: {mix_button('solo', 2)} }});")
+    assert ctx.eval("JSON.stringify(silenced)") == "[true,false,false]"
+
+
+def test_voice_frequencies_are_named_as_notes(sid_page):
+    ctx = sid_page
+    ctx.eval(
+        """
+        const voice = freq => ({
+            freq, waveform: 'PULSE', pulseWidth: 2048, envelope: 200, gate: true,
+            attack: 0, decay: 0, sustain: 0, release: 0
+        });
+        // 7493 * 985248 / 2^24 = 440 Hz on a PAL C64; 0 is silent.
+        playerInstance.state.voices = [voice(7493), voice(3747), voice(0)];
+        playerInstance.state.clockFrequency = 985248;
+        loads[0].resolve();
+        """
+    )
+    notes = [
+        ctx.eval(f"document.getElementById('note-{v}').textContent") for v in range(3)
+    ]
+    assert notes == ["A4", "A3", "\u2014"]
+
+
+def test_own_sid_button_opens_the_file_picker(sid_page):
+    # The picker input is hidden, so a focusable button has to open it.
+    ctx = sid_page
+    ctx.eval(
+        """
+        var picker = document.getElementById('sid-file');
+        picker.click = () => { picker.opened = true; };
+        document.getElementById('sid-file-btn').listeners.click();
+        """
+    )
+    assert ctx.eval("picker.opened === true")

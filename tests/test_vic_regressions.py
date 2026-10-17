@@ -12,7 +12,8 @@ def vic_context():
         """
         function regressionVideoMachine() {
             const m = new C64Machine({audioEnabled: false});
-            m.write(0xD011, 0x18);
+            // YSCROLL=3, as the KERNAL sets it, puts row 0 at raster 51.
+            m.write(0xD011, 0x1B);
             m.write(0xD016, 8);
             m.write(0xD018, 0x18);
             m.write(0xD020, 2);
@@ -150,7 +151,7 @@ def test_multicolor_foreground_uses_pixel_bits_not_palette(vic_context, bitmap, 
         vic_context,
         f"""(() => {{
             const m = regressionVideoMachine();
-            m.write(0xD011, {0x38 if bitmap else 0x18});
+            m.write(0xD011, {0x3B if bitmap else 0x1B});
             m.write(0xD016, 0x18);
             m.write(0xD022, 2);
             m.write(0xD023, 0);
@@ -258,3 +259,163 @@ def test_raster_irq_changes_are_captured_after_each_scanline(vic_context):
         })()""",
     )
     assert result["colors"] == result["expected"]
+
+
+def render_frame_js():
+    return """
+        function renderWholeFrame(m) {
+            for (let line = 15; line < 15 + 272; line++) {
+                m.vic.renderer.renderScanline(m.vic.frameBuffer, m, line);
+            }
+        }
+        function litRows(m, x, color) {
+            const rows = [];
+            for (let y = 0; y < 272; y++) {
+                if (m.vic.frameBuffer[y * 384 + x] === PALETTE[color]) rows.push(y);
+            }
+            return rows;
+        }
+    """
+
+
+@pytest.mark.parametrize(
+    "yscroll,expected",
+    [
+        # Default: row 0 fills the top of the window and row 24 is complete.
+        (3, list(range(36, 44)) + list(range(228, 236))),
+        # Row 0 starts 3 lines above the window; row 24 ends 3 lines early.
+        (0, list(range(36, 41)) + list(range(225, 233))),
+        # Row 0 starts 4 lines down; only 4 lines of row 24 fit in the window.
+        (7, list(range(40, 48)) + list(range(232, 236))),
+    ],
+)
+def test_text_rows_start_on_their_bad_line(vic_context, yscroll, expected):
+    vic_context.eval(render_frame_js())
+    rows = eval_json(
+        vic_context,
+        f"""(() => {{
+            const m = regressionVideoMachine();
+            m.write(0xD011, 0x18 | {yscroll});
+            m.write(0xD018, 0x14);
+            m.write(0x0400, 160);
+            m.write(0x0400 + 24 * 40, 160);
+            m.write(0xD800, 1);
+            m.write(0xD800 + 24 * 40, 1);
+            renderWholeFrame(m);
+            return litRows(m, 32, 1);
+        }})()""",
+    )
+    assert rows == expected
+
+
+def test_24_row_mode_covers_window_edges_with_border(vic_context):
+    vic_context.eval(render_frame_js())
+    result = eval_json(
+        vic_context,
+        """(() => {
+            const m = regressionVideoMachine();
+            m.write(0xD011, 0x13);
+            renderWholeFrame(m);
+            return {border: litRows(m, 100, 2), background: litRows(m, 100, 0)};
+        })()""",
+    )
+    assert result["background"] == list(range(40, 232))
+    assert 39 in result["border"] and 232 in result["border"]
+
+
+def test_cleared_den_blanks_the_screen_to_border_color(vic_context):
+    vic_context.eval(render_frame_js())
+    result = eval_json(
+        vic_context,
+        """(() => {
+            const m = regressionVideoMachine();
+            m.write(0xD011, 0x0B);
+            m.write(0xD015, 1);
+            regressionSprite(m, 0, 1);
+            renderWholeFrame(m);
+            let other = 0;
+            for (const pixel of m.vic.frameBuffer) if (pixel !== PALETTE[2]) other++;
+            return other;
+        })()""",
+    )
+    assert result == 0
+
+
+@pytest.mark.parametrize("columns", [40, 38])
+@pytest.mark.parametrize("multicolor", [False, True])
+def test_scrolled_graphics_stay_inside_the_display_window(
+    vic_context, columns, multicolor
+):
+    # XSCROLL moves column 39 up to 7 pixels right; the border must cover
+    # whatever passes the right edge of the 320-pixel window.
+    result = eval_json(
+        vic_context,
+        f"""(() => {{
+            const m = regressionVideoMachine();
+            m.write(0xD016, {0x08 if columns == 40 else 0x00} | {0x10 if multicolor else 0} | 7);
+            m.write(0xD018, 0x14);
+            for (const column of [37, 39]) {{
+                m.write(0x0400 + column, 160);
+                m.write(0xD800 + column, {0x09 if multicolor else 1});
+            }}
+            m.vic.renderer.renderScanline(m.vic.frameBuffer, m, 51);
+            const row = Array.from(m.vic.frameBuffer.slice(36 * 384, 37 * 384));
+            return {{
+                beyondWindow: row.slice(32 + 320).every(pixel => pixel === PALETTE[2]),
+                lastColumnShown: row.slice(32 + 303, 32 + 311).every(pixel => pixel !== PALETTE[0])
+            }};
+        }})()""",
+    )
+    assert result == {"beyondWindow": True, "lastColumnShown": True}
+
+
+def test_sprites_are_hidden_but_still_collide_under_the_side_border(vic_context):
+    result = eval_json(
+        vic_context,
+        """(() => {
+            const m = regressionVideoMachine();
+            m.write(0xD015, 3);
+            regressionSprite(m, 0, 1);
+            regressionSprite(m, 1, 1);
+            for (let row = 0; row < 21; row++) {
+                m.write(0x3000 + row * 3, 0xFF);
+                m.write(0x3040 + row * 3, 0xFF);
+            }
+            m.write(0xD000, 0);
+            m.write(0xD002, 4);
+            m.vic.renderer.renderScanline(m.vic.frameBuffer, m, 51);
+            const row = Array.from(m.vic.frameBuffer.slice(36 * 384, 36 * 384 + 40));
+            return {
+                border: row.slice(0, 32).every(pixel => pixel === PALETTE[2]),
+                spriteCollision: m.peek(0xD01E)
+            };
+        })()""",
+    )
+    assert result == {"border": True, "spriteCollision": 3}
+
+
+def test_unconnected_vic_register_bits_read_as_one(vic_context):
+    result = eval_json(
+        vic_context,
+        """(() => {
+            const m = new C64Machine({audioEnabled: false});
+            for (let i = 0; i < 150; i++) m.runFrame();
+            return {
+                border: m.read(0xD020), background: m.read(0xD021),
+                mirror: m.read(0xD060), control2: m.read(0xD016) & 0xC0,
+                memory: m.read(0xD018) & 0x01, status: m.read(0xD019) & 0x70,
+                enable: m.read(0xD01A) & 0xF0, unused: [m.read(0xD02F), m.read(0xD03F)]
+            };
+        })()""",
+    )
+    # PEEK(53280) and PEEK(53281) on a real C64 after power-on.
+    assert result == {
+        "border": 254,
+        "background": 246,
+        "mirror": 254,
+        "control2": 0xC0,
+        "memory": 1,
+        "status": 0x70,
+        "enable": 0xF0,
+        "unused": [0xFF, 0xFF],
+    }

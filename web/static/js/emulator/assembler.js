@@ -8,9 +8,12 @@
 // Features:
 // - All official 6502 opcodes
 // - Common addressing modes (immediate, zero page, absolute, indexed, indirect)
-// - Labels and symbol resolution
-// - ORG directive for setting load address
-// - BYTE/WORD directives for data
+// - Labels, with a colon or starting in the first column
+// - Expressions: $hex, %binary, decimal, 'c', symbols, * (current address),
+//   + - * / and parentheses, with < and > selecting the low or high byte
+// - ORG or *= to set the address, SYMBOL = value / EQU for constants
+// - BYTE/WORD/TEXT/ASCIIZ data (also .byte or ACME-style !byte); quoted
+//   text is stored as PETSCII, so "Hello" prints in the C64's upper case
 // - Detailed error messages for learning
 //
 // Usage:
@@ -160,6 +163,117 @@ function getInstructionSize(mode) {
 }
 
 // ============================================================================
+// SOURCE TEXT HELPERS
+// ============================================================================
+
+//
+// Directive names, accepted bare, with a dot (.byte) or ACME-style bang (!byte).
+//
+const DIRECTIVES = new Map([
+    ['ORG', 'ORG'],
+    ['BYTE', 'BYTE'], ['BYT', 'BYTE'], ['DB', 'BYTE'], ['DFB', 'BYTE'],
+    ['WORD', 'WORD'], ['DW', 'WORD'],
+    ['TEXT', 'TEXT'], ['ASC', 'TEXT'], ['ASCII', 'TEXT'],
+    ['ASCIIZ', 'ASCIIZ'],
+    ['EQU', 'EQU'],
+    ['INCBIN', 'INCBIN'], ['BINARY', 'INCBIN']
+]);
+
+function directiveName(word) {
+    return DIRECTIVES.get(word.replace(/^[.!]/, '').toUpperCase()) ?? null;
+}
+
+function isReservedWord(word) {
+    return OPCODES[word.toUpperCase()] !== undefined || directiveName(word) !== null;
+}
+
+//
+// Remove a trailing ; comment, leaving semicolons inside quotes alone.
+//
+function stripComment(line) {
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote) {
+            if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+            quote = ch;
+        } else if (ch === ';') {
+            return line.slice(0, i);
+        }
+    }
+    return line;
+}
+
+//
+// Split a comma-separated operand list, keeping quoted commas.
+//
+function splitList(text) {
+    const items = [];
+    let start = 0;
+    let quote = null;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quote) {
+            if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+            quote = ch;
+        } else if (ch === ',') {
+            items.push(text.slice(start, i).trim());
+            start = i + 1;
+        }
+    }
+    items.push(text.slice(start).trim());
+    return items;
+}
+
+//
+// The text of a "string" (or multi-character 'string'), or null. A single
+// quoted character is left to the expression parser as a character code.
+//
+function stringLiteral(item) {
+    const match = item.match(/^"(.*)"$/) || item.match(/^'(.{2,})'$/);
+    return match ? match[1] : null;
+}
+
+//
+// Store text the way it would be typed on a C64 in its default mode: letters
+// as unshifted (upper case) PETSCII, plus the few symbols ASCII lacks.
+//
+function toPetscii(ch) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0x61 && code <= 0x7A) return code - 0x20;
+    switch (ch) {
+        case '£': return 0x5C;
+        case '↑': return 0x5E;
+        case '←': return 0x5F;
+        case 'π': return 0xFF;
+    }
+    if (code > 0xFF) throw new Error(`Character '${ch}' has no PETSCII code`);
+    return code;
+}
+
+//
+// The expression part of an operand, without its addressing-mode syntax.
+//
+function operandExpression(operand, mode) {
+    const op = operand.trim();
+    switch (mode) {
+        case MODE.IMM: return op.slice(1);
+        case MODE.IZX: return op.replace(/^\(/, '').replace(/,\s*X\s*\)$/i, '');
+        case MODE.IZY: return op.replace(/^\(/, '').replace(/\)\s*,\s*Y$/i, '');
+        case MODE.IND: return op.slice(1, -1);
+        case MODE.ZPX:
+        case MODE.ABX:
+        case MODE.ZPY:
+        case MODE.ABY:
+            return op.replace(/,\s*[XY]$/i, '');
+        default:
+            return op;
+    }
+}
+
+// ============================================================================
 // ASSEMBLER
 // ============================================================================
 
@@ -201,17 +315,24 @@ export class Assembler {
         this.output = [];
         this.sourceMap = [];
         this.startAddress = null;
+        this.lineAddress = null;
         // Pass-1 mode cache: lineNum -> addressing mode. Pass-2 reuses these so
         // a forward-referenced label that turns out to be zero-page can't shrink
         // an instruction pass-1 sized as absolute (which would mis-align addresses).
         this.lineModes = new Map();
+        // Equates whose value was already known before any label was placed.
+        this.earlyEquates = new Set();
 
-        // Parse into lines
-        const lines = source.split('\n').map((line, index) => ({
-            text: line,
-            lineNum: index + 1,
-            trimmed: line.replace(/;.*$/, '').trim()  // Remove comments
-        }));
+        const lines = source.split('\n').map((line, index) => {
+            const code = stripComment(line);
+            return {
+                text: line,
+                lineNum: index + 1,
+                trimmed: code.trim(),
+                // A word in the first column is a label even without a colon.
+                labelColumn: /^[A-Za-z_]/.test(code)
+            };
+        });
 
         // Two-pass assembly
         // Pass 1: Calculate addresses and collect symbols
@@ -233,50 +354,49 @@ export class Assembler {
     pass1(lines) {
         this.currentAddress = 0x0800;
 
-        // Pre-pass: Collect all EQU definitions first
-        // This allows forward references to EQU symbols in instruction operands
-        // to be resolved correctly when calculating instruction sizes
+        // Instruction sizes depend on whether operands fit in zero page, so
+        // constants are defined before any instruction is sized, even when
+        // they are written below their first use. Equates that refer to
+        // labels are resolved in source order by the main pass instead.
         for (const line of lines) {
             if (!line.trimmed) continue;
             try {
-                const parsed = this.parseLine(line.trimmed, line.lineNum);
-                if (parsed.directive === 'EQU') {
-                    this.handleDirectivePass1(parsed, line.lineNum);
+                const parsed = this.parseLine(line.trimmed, line.labelColumn);
+                if (parsed.directive !== 'EQU' || !parsed.label) continue;
+                const value = this.evaluate(parsed.operand);
+                if (value !== null && !this.symbols.has(parsed.label)) {
+                    this.symbols.set(parsed.label, value);
+                    this.earlyEquates.add(line.lineNum);
                 }
             } catch (e) {
-                // Ignore errors in pre-pass, they'll be caught in main pass
+                // Reported against its line by the main pass.
             }
         }
 
-        // Main pass: Process all lines
         for (const line of lines) {
             if (!line.trimmed) continue;
+            this.lineAddress = this.currentAddress;
 
             try {
-                const parsed = this.parseLine(line.trimmed, line.lineNum);
+                const parsed = this.parseLine(line.trimmed, line.labelColumn);
 
-                // Handle label (but not for EQU - that handles its own label)
-                if (parsed.label && parsed.directive !== 'EQU') {
-                    if (this.symbols.has(parsed.label)) {
-                        this.error(line.lineNum, `Duplicate label: ${parsed.label}`);
-                    } else {
-                        this.symbols.set(parsed.label, this.currentAddress);
-                    }
-                }
-
-                // Handle directives (skip EQU, already processed in pre-pass)
-                if (parsed.directive) {
-                    if (parsed.directive !== 'EQU') {
-                        this.handleDirectivePass1(parsed, line.lineNum);
-                    }
+                if (parsed.directive === 'EQU') {
+                    this.defineEquate(parsed, line.lineNum);
                     continue;
                 }
 
-                // Handle instruction
+                if (parsed.label) {
+                    this.defineSymbol(parsed.label, this.currentAddress, line.lineNum, 'label');
+                }
+
+                if (parsed.directive) {
+                    this.handleDirectivePass1(parsed, line.lineNum);
+                    continue;
+                }
+
                 if (parsed.mnemonic) {
                     this.lineModes.set(line.lineNum, parsed.mode);
-                    const size = this.getInstructionSize(parsed);
-                    this.currentAddress += size;
+                    this.currentAddress += getInstructionSize(parsed.mode);
                 }
             } catch (e) {
                 this.error(line.lineNum, e.message);
@@ -295,9 +415,10 @@ export class Assembler {
 
         for (const line of lines) {
             if (!line.trimmed) continue;
+            this.lineAddress = this.currentAddress;
 
             try {
-                const parsed = this.parseLine(line.trimmed, line.lineNum);
+                const parsed = this.parseLine(line.trimmed, line.labelColumn);
 
                 // Handle directives
                 if (parsed.directive) {
@@ -319,10 +440,27 @@ export class Assembler {
         }
     }
 
+    defineEquate(parsed, lineNum) {
+        if (!parsed.label) throw new Error('EQU requires a symbol name');
+        if (this.earlyEquates.has(lineNum)) return;
+        const value = this.evaluate(parsed.operand, { strict: true });
+        this.defineSymbol(parsed.label, value, lineNum, 'symbol');
+    }
+
+    defineSymbol(name, value, lineNum, kind) {
+        if (this.symbols.has(name)) {
+            this.error(lineNum, `Duplicate ${kind}: ${name}`);
+        } else {
+            this.symbols.set(name, value);
+        }
+    }
+
     //
-    // Parse a single line of assembly
+    // Parse a single line of assembly whose comment has been removed
+    // @param {string} text - Trimmed source text
+    // @param {boolean} labelColumn - The text started in the first column
     //
-    parseLine(text, lineNum) {
+    parseLine(text, labelColumn = false) {
         const result = {
             label: null,
             mnemonic: null,
@@ -331,44 +469,61 @@ export class Assembler {
             mode: null
         };
 
-        // Check for equate syntax: SYMBOL = VALUE
-        const equateMatch = text.match(/^(\w+)\s*=\s*(.+)$/);
-        if (equateMatch) {
-            result.directive = 'EQU';
-            result.label = equateMatch[1].toUpperCase();
-            result.operand = equateMatch[2].trim();
+        // Origin: *= $C000
+        const origin = text.match(/^\*\s*=\s*(.*)$/);
+        if (origin) {
+            result.directive = 'ORG';
+            result.operand = origin[1].trim();
             return result;
         }
 
-        // Check for label (ends with : or starts at column 0 with no whitespace before instruction)
+        // Equates: SYMBOL = VALUE, SYMBOL EQU VALUE or SYMBOL: EQU VALUE
+        const equate = text.match(/^([A-Za-z_]\w*)\s*=\s*(.*)$/)
+            || text.match(/^([A-Za-z_]\w*):?\s+[.!]?EQU(?:\s+(.*))?$/i);
+        if (equate) {
+            result.directive = 'EQU';
+            result.label = equate[1].toUpperCase();
+            result.operand = (equate[2] ?? '').trim();
+            return result;
+        }
+
         let remaining = text;
-        const labelMatch = remaining.match(/^(\w+):/);
-        if (labelMatch) {
-            result.label = labelMatch[1].toUpperCase();
-            remaining = remaining.substring(labelMatch[0].length).trim();
+        const colonLabel = remaining.match(/^([A-Za-z_]\w*):/);
+        if (colonLabel) {
+            result.label = colonLabel[1].toUpperCase();
+            remaining = remaining.slice(colonLabel[0].length).trim();
+        } else if (labelColumn) {
+            const word = remaining.match(/^[A-Za-z_]\w*(?=\s|$)/);
+            if (word && !isReservedWord(word[0])) {
+                result.label = word[0].toUpperCase();
+                remaining = remaining.slice(word[0].length).trim();
+            }
         }
 
         if (!remaining) return result;
 
-        // Parse instruction or directive
-        const parts = remaining.split(/\s+/);
-        const first = parts[0].toUpperCase();
+        // The operand keeps its spacing: TEXT "A  B" has two spaces.
+        const first = remaining.match(/^\S+/)[0];
+        const operand = remaining.slice(first.length).trim();
 
-        // Check for directive
-        if (first.startsWith('.') || ['ORG', 'BYTE', 'WORD', 'TEXT', 'DB', 'DW', 'EQU', 'INCBIN'].includes(first)) {
-            result.directive = first.replace('.', '');
-            result.operand = parts.slice(1).join(' ');
+        const directive = directiveName(first);
+        if (directive) {
+            result.directive = directive;
+            result.operand = operand;
             return result;
         }
-
-        // Must be an instruction
-        if (!OPCODES[first]) {
-            throw new Error(`Unknown instruction: ${first}`);
+        if (/^[.!]/.test(first)) {
+            throw new Error(`Unknown directive: ${first}`);
         }
 
-        result.mnemonic = first;
-        result.operand = parts.slice(1).join(' ').trim();
-        result.mode = this.parseAddressingMode(result.operand, first);
+        const mnemonic = first.toUpperCase();
+        if (!OPCODES[mnemonic]) {
+            throw new Error(`Unknown instruction: ${mnemonic}`);
+        }
+
+        result.mnemonic = mnemonic;
+        result.operand = operand;
+        result.mode = this.parseAddressingMode(operand, mnemonic);
 
         return result;
     }
@@ -377,62 +532,48 @@ export class Assembler {
     // Parse addressing mode from operand
     //
     parseAddressingMode(operand, mnemonic) {
-        if (!operand || operand === '' || operand.toUpperCase() === 'A') {
-            // Implied or Accumulator
-            if (OPCODES[mnemonic][MODE.ACC]) {
-                return MODE.ACC;
-            }
-            return MODE.IMP;
-        }
+        const modes = OPCODES[mnemonic];
+        const op = operand.trim();
 
-        const op = operand.toUpperCase();
+        // Implied or Accumulator
+        if (!op || /^A$/i.test(op)) {
+            return modes[MODE.ACC] !== undefined ? MODE.ACC : MODE.IMP;
+        }
 
         // Immediate: #$nn or #nn
         if (op.startsWith('#')) {
             return MODE.IMM;
         }
 
-        // Indirect X: ($nn,X)
-        if (op.match(/^\(\$?[\dA-F]+\s*,\s*X\s*\)$/i) || op.match(/^\(\w+\s*,\s*X\s*\)$/i)) {
-            return MODE.IZX;
-        }
-
-        // Indirect Y: ($nn),Y
-        if (op.match(/^\(\$?[\dA-F]+\s*\)\s*,\s*Y$/i) || op.match(/^\(\w+\s*\)\s*,\s*Y$/i)) {
-            return MODE.IZY;
-        }
-
-        // Indirect: ($nnnn)
-        if (op.match(/^\(\$?[\dA-F]+\s*\)$/i) || op.match(/^\(\w+\s*\)$/i)) {
-            return MODE.IND;
-        }
-
-        // Indexed X: $nnnn,X or $nn,X
-        if (op.match(/,\s*X$/i)) {
-            const value = this.parseValue(op.replace(/,\s*X$/i, ''));
-            if (value !== null && value <= 0xFF && OPCODES[mnemonic][MODE.ZPX]) {
-                return MODE.ZPX;
-            }
-            return MODE.ABX;
-        }
-
-        // Indexed Y: $nnnn,Y or $nn,Y
-        if (op.match(/,\s*Y$/i)) {
-            const value = this.parseValue(op.replace(/,\s*Y$/i, ''));
-            if (value !== null && value <= 0xFF && OPCODES[mnemonic][MODE.ZPY]) {
-                return MODE.ZPY;
-            }
-            return MODE.ABY;
-        }
-
         // Relative (branches)
-        if (OPCODES[mnemonic] && OPCODES[mnemonic][MODE.REL]) {
+        if (modes[MODE.REL] !== undefined) {
             return MODE.REL;
         }
 
+        // Indirect X: ($nn,X) and indirect Y: ($nn),Y
+        if (/^\(.*,\s*X\s*\)$/i.test(op)) return MODE.IZX;
+        if (/^\(.*\)\s*,\s*Y$/i.test(op)) return MODE.IZY;
+
+        // Indirect: ($nnnn) exists only for JMP; elsewhere parentheses group.
+        if (modes[MODE.IND] !== undefined && /^\(.*\)$/.test(op)) {
+            return MODE.IND;
+        }
+
+        // Indexed: $nnnn,X / $nn,X / $nnnn,Y / $nn,Y
+        const indexed = op.match(/^(.*?),\s*([XY])$/i);
+        if (indexed) {
+            const byX = indexed[2].toUpperCase() === 'X';
+            const zeroPage = byX ? MODE.ZPX : MODE.ZPY;
+            const value = this.evaluate(indexed[1]);
+            if (value !== null && value >= 0 && value <= 0xFF && modes[zeroPage] !== undefined) {
+                return zeroPage;
+            }
+            return byX ? MODE.ABX : MODE.ABY;
+        }
+
         // Zero page or Absolute
-        const value = this.parseValue(op);
-        if (value !== null && value <= 0xFF && OPCODES[mnemonic][MODE.ZP]) {
+        const value = this.evaluate(op);
+        if (value !== null && value >= 0 && value <= 0xFF && modes[MODE.ZP] !== undefined) {
             return MODE.ZP;
         }
 
@@ -440,95 +581,130 @@ export class Assembler {
     }
 
     //
-    // Parse a numeric value, symbol, or expression
-    // Supports: SYMBOL, SYMBOL+n, SYMBOL-n, <SYMBOL, >SYMBOL
+    // Evaluate an expression: numbers ($hex, %binary, decimal, 'c'), symbols,
+    // * (the address of the current line), + - * / and parentheses. A leading
+    // < or > selects the low or high byte of the whole expression.
     //
-    parseValue(str) {
-        if (!str) return null;
-        str = str.trim();
+    // @param {string} text - Expression source
+    // @param {{strict?: boolean}} options - strict reports undefined symbols
+    // @returns {number|null} The value, or null if a symbol is not yet defined
+    //
+    evaluate(text, { strict = false } = {}) {
+        const source = text.trim();
+        let pos = 0;
+        let unresolved = null;
 
-        // Low byte operator: <SYMBOL or <$nnnn or <(expr)
-        if (str.startsWith('<')) {
-            const innerValue = this.parseValue(str.substring(1));
-            if (innerValue === null) return null;
-            return innerValue & 0xFF;
-        }
+        const invalid = () => new Error(source ? `Invalid expression: ${source}` : 'Missing value');
+        const skipSpace = () => {
+            while (pos < source.length && /\s/.test(source[pos])) pos++;
+        };
 
-        // High byte operator: >SYMBOL or >$nnnn or >(expr)
-        if (str.startsWith('>')) {
-            const innerValue = this.parseValue(str.substring(1));
-            if (innerValue === null) return null;
-            return (innerValue >> 8) & 0xFF;
-        }
+        const primary = () => {
+            skipSpace();
+            const rest = source.slice(pos);
+            let match;
+            if (rest.startsWith('-')) {
+                pos++;
+                const value = primary();
+                return value === null ? null : -value;
+            }
+            if (rest.startsWith('(')) {
+                pos++;
+                const value = sum();
+                skipSpace();
+                if (source[pos] !== ')') throw invalid();
+                pos++;
+                return value;
+            }
+            if (rest.startsWith('*')) {
+                pos++;
+                if (this.lineAddress === null) unresolved ??= '*';
+                return this.lineAddress;
+            }
+            if ((match = rest.match(/^'(.)'/))) {
+                pos += 3;
+                return toPetscii(match[1]);
+            }
+            if ((match = rest.match(/^\$([0-9A-F]+)(?![\w$])/i))) {
+                pos += match[0].length;
+                return parseInt(match[1], 16);
+            }
+            if ((match = rest.match(/^0x([0-9A-F]+)(?![\w$])/i))) {
+                pos += match[0].length;
+                return parseInt(match[1], 16);
+            }
+            if ((match = rest.match(/^%([01]+)(?![\w$])/))) {
+                pos += match[0].length;
+                return parseInt(match[1], 2);
+            }
+            if ((match = rest.match(/^(\d+)(?![\w$])/))) {
+                pos += match[0].length;
+                return parseInt(match[1], 10);
+            }
+            if ((match = rest.match(/^[A-Za-z_]\w*/))) {
+                pos += match[0].length;
+                const name = match[0].toUpperCase();
+                if (this.symbols.has(name)) return this.symbols.get(name);
+                unresolved ??= match[0];
+                return null;
+            }
+            throw invalid();
+        };
 
-        // Check for addition/subtraction expression: SYMBOL+n or SYMBOL-n
-        // Handle this BEFORE checking for symbol so we can parse complex expressions
-        const addMatch = str.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*(.+)$/);
-        if (addMatch) {
-            const baseValue = this.parseValue(addMatch[1]);
-            const offsetValue = this.parseValue(addMatch[2]);
-            if (baseValue === null || offsetValue === null) return null;
-            return (baseValue + offsetValue) & 0xFFFF;
-        }
+        // After a value, * means multiply; where a value is expected, it is the address.
+        const product = () => {
+            let value = primary();
+            for (;;) {
+                skipSpace();
+                const op = source[pos];
+                if (op !== '*' && op !== '/') return value;
+                pos++;
+                const right = primary();
+                if (value === null || right === null) {
+                    value = null;
+                } else if (op === '*') {
+                    value *= right;
+                } else if (right === 0) {
+                    throw new Error(`Division by zero: ${source}`);
+                } else {
+                    value = Math.trunc(value / right);
+                }
+            }
+        };
 
-        const subMatch = str.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*-\s*(.+)$/);
-        if (subMatch) {
-            const baseValue = this.parseValue(subMatch[1]);
-            const offsetValue = this.parseValue(subMatch[2]);
-            if (baseValue === null || offsetValue === null) return null;
-            return (baseValue - offsetValue) & 0xFFFF;
-        }
+        const sum = () => {
+            let value = product();
+            for (;;) {
+                skipSpace();
+                const op = source[pos];
+                if (op !== '+' && op !== '-') return value;
+                pos++;
+                const right = product();
+                value = value === null || right === null ? null
+                    : op === '+' ? value + right : value - right;
+            }
+        };
 
-        // Hex: $nn or 0xnn
-        if (str.startsWith('$')) {
-            return parseInt(str.substring(1), 16);
-        }
-        if (str.toLowerCase().startsWith('0x')) {
-            return parseInt(str.substring(2), 16);
-        }
+        skipSpace();
+        const byteSelector = source[pos] === '<' || source[pos] === '>' ? source[pos++] : null;
+        let value = sum();
+        skipSpace();
+        if (pos < source.length) throw invalid();
 
-        // Binary: %nnnnnnnn
-        if (str.startsWith('%')) {
-            return parseInt(str.substring(1), 2);
+        if (value === null) {
+            if (strict) throw new Error(`Undefined symbol: ${unresolved}`);
+            return null;
         }
-
-        // Decimal
-        if (/^\d+$/.test(str)) {
-            return parseInt(str, 10);
-        }
-
-        // Character: 'A'
-        if (str.match(/^'.'$/)) {
-            return str.charCodeAt(1);
-        }
-
-        // Symbol
-        if (this.symbols.has(str.toUpperCase())) {
-            return this.symbols.get(str.toUpperCase());
-        }
-
-        // Unknown symbol - return null (will be resolved in pass 2)
-        return null;
+        if (byteSelector === '<') value &= 0xFF;
+        if (byteSelector === '>') value = (value >> 8) & 0xFF;
+        return value;
     }
 
     //
-    // Get operand value, resolving symbols
+    // Get the value of an instruction's operand, reporting undefined symbols
     //
-    getOperandValue(operand, lineNum) {
-        if (!operand) return 0;
-
-        let op = operand.trim();
-
-        // Remove addressing mode decorations
-        op = op.replace(/^#/, '');  // Immediate
-        op = op.replace(/^\(/, '').replace(/\).*$/, '');  // Indirect
-        op = op.replace(/,\s*[XY]$/i, '');  // Indexed
-
-        const value = this.parseValue(op);
-        if (value === null) {
-            throw new Error(`Undefined symbol: ${op}`);
-        }
-        return value;
+    operandValue(parsed) {
+        return this.evaluate(operandExpression(parsed.operand, parsed.mode), { strict: true });
     }
 
     //
@@ -544,60 +720,35 @@ export class Assembler {
     //
     handleDirectivePass1(parsed, lineNum) {
         switch (parsed.directive) {
-            case 'ORG':
-                const addr = this.parseValue(parsed.operand);
-                if (!Number.isInteger(addr) || addr < 0 || addr > 0xFFFF) {
+            case 'ORG': {
+                const address = this.evaluate(parsed.operand, { strict: true });
+                if (address < 0 || address > 0xFFFF) {
                     this.error(lineNum, `Invalid address: ${parsed.operand}`);
                 } else {
-                    this.currentAddress = addr;
+                    this.currentAddress = address;
                 }
                 break;
-
-            case 'EQU':
-                // Equate: define a symbol with a constant value
-                // The label is in parsed.label, the value is in parsed.operand
-                if (!parsed.label) {
-                    this.error(lineNum, 'EQU requires a symbol name');
-                    break;
-                }
-                const equValue = this.parseValue(parsed.operand);
-                if (equValue === null) {
-                    this.error(lineNum, `Invalid value for EQU: ${parsed.operand}`);
-                } else {
-                    if (this.symbols.has(parsed.label)) {
-                        this.error(lineNum, `Duplicate symbol: ${parsed.label}`);
-                    } else {
-                        this.symbols.set(parsed.label, equValue);
-                    }
-                }
-                break;
+            }
 
             case 'BYTE':
-            case 'DB':
-                const bytes = this.parseDataBytes(parsed.operand, true);
-                this.currentAddress += bytes.length;
+            case 'TEXT':
+            case 'ASCIIZ':
+                this.currentAddress += this.dataBytes(parsed, true).length;
                 break;
 
             case 'WORD':
-            case 'DW':
-                const words = parsed.operand.split(',');
-                this.currentAddress += words.length * 2;
+                this.currentAddress += splitList(parsed.operand).length * 2;
                 break;
 
-            case 'TEXT':
-                const text = this.parseString(parsed.operand);
-                this.currentAddress += text.length;
-                break;
-
-            case 'INCBIN':
-                const filename = this.parseString(parsed.operand);
+            case 'INCBIN': {
+                const filename = stringLiteral(parsed.operand) ?? parsed.operand;
                 if (this.files.has(filename)) {
-                    const data = this.files.get(filename);
-                    this.currentAddress += data.length;
+                    this.currentAddress += this.files.get(filename).length;
                 } else {
                     this.error(lineNum, `File not found: ${filename}`);
                 }
                 break;
+            }
         }
     }
 
@@ -606,94 +757,81 @@ export class Assembler {
     //
     handleDirectivePass2(parsed, lineNum) {
         switch (parsed.directive) {
-            case 'ORG':
-                const newAddr = this.parseValue(parsed.operand);
+            case 'ORG': {
+                const address = this.evaluate(parsed.operand, { strict: true });
                 if (this.output.length > 0) {
-                    if (newAddr < this.currentAddress) {
+                    if (address < this.currentAddress) {
                         throw new Error('ORG cannot move backwards after emitting code or data');
                     }
-                    while (this.currentAddress < newAddr) {
+                    while (this.currentAddress < address) {
                         this.emit(0, lineNum);
                     }
                 }
-                this.currentAddress = newAddr;
+                this.currentAddress = address;
                 break;
+            }
 
             case 'EQU':
                 // EQU is fully handled in pass 1, no code generation needed
                 break;
 
             case 'BYTE':
-            case 'DB':
-                const bytes = this.parseDataBytes(parsed.operand);
-                for (const b of bytes) {
-                    this.emit(b & 0xFF, lineNum);
+            case 'TEXT':
+            case 'ASCIIZ':
+                for (const byte of this.dataBytes(parsed, false)) {
+                    this.emit(byte, lineNum);
                 }
                 break;
 
             case 'WORD':
-            case 'DW':
-                const words = parsed.operand.split(',');
-                for (const w of words) {
-                    const value = this.parseValue(w.trim());
+                for (const item of splitList(parsed.operand)) {
+                    if (!item) throw new Error('WORD requires a value for each operand');
+                    const value = this.evaluate(item, { strict: true });
+                    if (value < -0x8000 || value > 0xFFFF) {
+                        throw new Error(`Value ${value} does not fit in a word`);
+                    }
                     this.emit(value & 0xFF, lineNum);
                     this.emit((value >> 8) & 0xFF, lineNum);
                 }
                 break;
 
-            case 'INCBIN':
-                const filename = this.parseString(parsed.operand);
-                if (this.files.has(filename)) {
-                    const data = this.files.get(filename);
-                    for (let i = 0; i < data.length; i++) {
-                        this.emit(data[i], lineNum);
-                    }
-                }
-                // Error already reported in pass 1
-                break;
-
-            case 'TEXT':
-                const text = this.parseString(parsed.operand);
-                for (const ch of text) {
-                    this.emit(ch.charCodeAt(0), lineNum);
+            case 'INCBIN': {
+                const filename = stringLiteral(parsed.operand) ?? parsed.operand;
+                const data = this.files.get(filename) ?? [];  // missing files fail pass 1
+                for (let i = 0; i < data.length; i++) {
+                    this.emit(data[i], lineNum);
                 }
                 break;
+            }
         }
     }
 
     //
-    // Parse data bytes (comma-separated values)
+    // The bytes of a BYTE, TEXT or ASCIIZ list: strings and byte expressions
+    // @param {boolean} allowUnresolved - Forward references reserve a byte (pass 1)
     //
-    parseDataBytes(operand, allowUnresolved = false) {
+    dataBytes(parsed, allowUnresolved) {
         const bytes = [];
-        const parts = operand.split(',');
-        for (const part of parts) {
-            const expression = part.trim();
-            if (!expression) {
-                throw new Error('BYTE requires a value for each operand');
+        for (const item of splitList(parsed.operand)) {
+            if (!item) {
+                throw new Error(`${parsed.directive} requires a value for each operand`);
             }
-            const value = this.parseValue(expression);
-            if (value === null && allowUnresolved) {
-                // Forward references still occupy one byte in the address pass.
+            const text = stringLiteral(item);
+            if (text !== null) {
+                for (const ch of text) bytes.push(toPetscii(ch));
+                continue;
+            }
+            const value = this.evaluate(item, { strict: !allowUnresolved });
+            if (value === null) {
                 bytes.push(0);
-            } else if (!Number.isInteger(value)) {
-                throw new Error(`Undefined symbol or invalid BYTE value: ${expression}`);
+            } else if (value < -128 || value > 0xFF) {
+                throw new Error(`Value ${value} does not fit in a byte`);
             } else {
-                bytes.push(value);
+                bytes.push(value & 0xFF);
             }
         }
+        if (parsed.directive === 'ASCIIZ') bytes.push(0);
         return bytes;
-    }
-
-    //
-    // Parse a string literal
-    //
-    parseString(operand) {
-        const match = operand.match(/^["'](.*)["']$/);
-        if (match) {
-            return match[1];
-        }
-        return operand;
     }
 
     /**
@@ -702,33 +840,53 @@ export class Assembler {
     emitInstruction(parsed, lineNum) {
         const opcode = OPCODES[parsed.mnemonic][parsed.mode];
         if (opcode === undefined) {
-            throw new Error(`Invalid addressing mode ${parsed.mode} for ${parsed.mnemonic}`);
+            throw new Error(`${parsed.mnemonic} cannot use ${parsed.mode} addressing`);
         }
 
         this.emit(opcode, lineNum);
 
         const size = getInstructionSize(parsed.mode);
+        if (size === 1) return;
 
-        if (size > 1) {
-            let value = this.getOperandValue(parsed.operand, lineNum);
-
-            // Handle relative addressing (branches)
-            if (parsed.mode === MODE.REL) {
-                const offset = value - (this.currentAddress + 1);
-                if (offset < -128 || offset > 127) {
-                    this.error(lineNum, `Branch target out of range: ${offset}`);
-                    value = 0;
-                } else {
-                    value = offset & 0xFF;
-                }
-                this.emit(value, lineNum);
-            } else if (size === 2) {
-                this.emit(value & 0xFF, lineNum);
-            } else {
-                this.emit(value & 0xFF, lineNum);
-                this.emit((value >> 8) & 0xFF, lineNum);
-            }
+        let operandBytes;
+        try {
+            operandBytes = this.encodeOperand(parsed, size);
+        } catch (error) {
+            // Keep later lines at the addresses pass 1 gave them.
+            for (let i = 1; i < size; i++) this.emit(0, lineNum);
+            throw error;
         }
+        for (const byte of operandBytes) {
+            this.emit(byte, lineNum);
+        }
+    }
+
+    //
+    // Encode the operand bytes of the instruction whose opcode was just emitted
+    //
+    encodeOperand(parsed, size) {
+        const value = this.operandValue(parsed);
+
+        if (parsed.mode === MODE.REL) {
+            const offset = value - (this.currentAddress + 1);
+            if (offset < -128 || offset > 127) {
+                throw new Error(`Branch target out of range: ${offset} (a branch reaches -128 to +127 bytes)`);
+            }
+            return [offset & 0xFF];
+        }
+
+        if (size === 2) {
+            const lowest = parsed.mode === MODE.IMM ? -128 : 0;
+            if (value < lowest || value > 0xFF) {
+                throw new Error(`Value ${value} does not fit in a byte`);
+            }
+            return [value & 0xFF];
+        }
+
+        if (value < 0 || value > 0xFFFF) {
+            throw new Error(`Address ${value} is outside $0000-$FFFF`);
+        }
+        return [value & 0xFF, (value >> 8) & 0xFF];
     }
 
     /**

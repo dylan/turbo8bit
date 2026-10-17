@@ -231,3 +231,91 @@ class TestAssemblyHighlighting:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+def tokenize_json(ctx, source):
+    import json
+
+    return json.loads(
+        ctx.eval(
+            f"""JSON.stringify((() => {{
+                const result = new BASICTokenizer().tokenize({json.dumps(source)});
+                return {{
+                    numbers: result.lines.map(line => line.lineNum),
+                    tokens: result.lines.map(line => Array.from(line.tokens)),
+                    errors: result.errors.filter(e => e.type === 'error').map(e => e.message),
+                    warnings: result.errors.filter(e => e.type === 'warning').map(e => e.message)
+                }};
+            }})())"""
+        )
+    )
+
+
+class TestC64LineEditing:
+    """Program text behaves as if typed line by line at the READY prompt."""
+
+    def test_lines_are_sorted_by_number(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, "20 PRINT 20\n10 PRINT 10")
+        assert result["numbers"] == [10, 20]
+        assert result["errors"] == []
+        assert "sorts lines" in result["warnings"][0]
+
+    def test_repeated_line_replaces_the_earlier_one(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, "10 PRINT 1\n20 END\n10 PRINT 2")
+        assert result["numbers"] == [10, 20]
+        assert result["tokens"][0] == [0x99, ord(" "), ord("2")]
+        assert "replaces" in result["warnings"][0]
+
+    def test_bare_line_number_deletes_the_line(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, "10 PRINT 1\n20 END\n10")
+        assert result["numbers"] == [20]
+        assert "deletes" in result["warnings"][0]
+
+    def test_overlong_line_is_an_error(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, "10 REM " + "X" * 260)
+        assert any("too long" in error for error in result["errors"])
+
+
+class TestControlCodes:
+    """{CLR}-style names in strings, as in printed C64 listings."""
+
+    def test_named_repeated_and_numeric_codes(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, '10 PRINT "{CLR}{3 DOWN}{red}HI{right*2}{147}"')
+        assert result["tokens"][0] == [
+            0x99, ord(" "), ord('"'), 147, 17, 17, 17, 28, ord("H"), ord("I"), 29, 29, 147,
+            ord('"'),
+        ]
+
+    def test_unknown_codes_stay_literal_and_warn(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, '10 PRINT "{FOO}"')
+        assert result["tokens"][0][3:8] == [ord(c) for c in "{FOO}"]
+        warnings = tokenizer_ctx.eval(
+            "new BASICTokenizer().validate('10 PRINT \"{FOO}\"').map(e => e.message).join()"
+        )
+        assert "Unknown control code {FOO}" in warnings
+
+    def test_codes_outside_strings_are_not_expanded(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, "10 REM {CLR}")
+        assert result["tokens"][0][1:] == [ord(c) for c in " {CLR}"]
+
+    def test_expand_control_codes_for_typed_text(self, tokenizer_ctx):
+        text = tokenizer_ctx.eval("expandControlCodes('PRINT \"{CLR}{2 RIGHT}\"{X}')")
+        assert text == 'PRINT "\x93\x1d\x1d"{X}'
+
+    def test_pi_and_pound_are_petscii(self, tokenizer_ctx):
+        result = tokenize_json(tokenizer_ctx, '10 PRINT \u03c0;"\u00a3"')
+        assert result["tokens"][0] == [0x99, ord(" "), 0xFF, ord(";"), ord('"'), 0x5C, ord('"')]
+
+    def test_untypeable_characters_warn(self, tokenizer_ctx):
+        warnings = tokenizer_ctx.eval(
+            "new BASICTokenizer().validate('10 PRINT \"CAF\u00c9\u20ac\"').map(e => e.message).join()"
+        )
+        assert "is not a C64 character" in warnings
+
+    def test_control_codes_are_highlighted(self, tokenizer_ctx):
+        types = tokenizer_ctx.eval(
+            "JSON.stringify(highlightBasic('10 PRINT \"{CLR}A\"')"
+            ".filter(t => t.type === 'control').map(t => t.text))"
+        )
+        assert types == '["{CLR}"]'
+

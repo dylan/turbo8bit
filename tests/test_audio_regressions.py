@@ -699,6 +699,18 @@ def test_track_change_preserves_live_model_and_clock_overrides(audio_context):
     assert result["model"] == "MOS8580"
 
 
+def test_songs_past_the_32nd_share_the_last_speed_bit(audio_context):
+    result = eval_json(
+        audio_context,
+        """(() => {
+            const tune = parseSidFile(makeSid({songs: 40, speed: 0x80000000}));
+            return [0, 30, 31, 32, 39].map(song => generatePsidDriver(tune, song).debug.useCIA);
+        })()""",
+    )
+    # Bit n times song n + 1; every song from the 32nd on uses bit 31.
+    assert result == [0, 0, 1, 1, 1]
+
+
 @pytest.mark.parametrize(
     ("flags", "expected_calls", "frame_cycles", "clock"),
     [(0x14, 51, 19656, 985248), (0x18, 60, 17095, 1022727)],

@@ -193,6 +193,10 @@ export class VICIIRenderer {
         // for hires character cells. Sprites themselves treat only 00 as clear.
         // https://www.cebix.net/VIC-Article.txt, section 3.8.2.
         this.graphicsForeground = new Uint8Array(width);
+
+        // Vertical border flip-flop: cleared at the top of the display window
+        // only when DEN is set, so a blanked screen stays border-colored.
+        this.verticalBorderOpen = true;
     }
 
     //
@@ -336,13 +340,20 @@ export class VICIIRenderer {
 
         // Get colors for this scanline
         const borderColor = PALETTE[io[0x020] & 0x0F];
-        const bgColor = PALETTE[io[0x021] & 0x0F];
+        const bgColor = this.getGraphicsMode(memory) === MODE_INVALID
+            ? PALETTE[0]
+            : PALETTE[io[0x021] & 0x0F];
 
-        // Determine if this scanline is in the main display area (Y)
-        const inScreenY = canvasY >= this.borderY && canvasY < (this.borderY + this.screenHeight);
+        // RSEL=0 (24 rows) moves both vertical border edges 4 lines inward.
+        // The border only opens at the top edge if DEN is set at that moment,
+        // which is how clearing DEN blanks the whole screen to border color.
+        const rsel = (io[0x011] & 0x08) !== 0;
+        const windowTop = this.borderY + (rsel ? 0 : 4);
+        const windowBottom = this.borderY + this.screenHeight - (rsel ? 0 : 4);
+        if (canvasY === windowTop) this.verticalBorderOpen = (io[0x011] & 0x10) !== 0;
 
         const rowOffset = canvasY * w;
-        if (!inScreenY) {
+        if (canvasY < windowTop || canvasY >= windowBottom || !this.verticalBorderOpen) {
             frameBuffer.fill(borderColor, rowOffset, rowOffset + w);
             return;
         }
@@ -355,6 +366,10 @@ export class VICIIRenderer {
         frameBuffer.fill(borderColor, screenEnd, rowOffset + w);
 
         this.renderDisplayWindow(frameBuffer, memory, canvasY, rasterLine);
+
+        // XSCROLL can push the last column up to 7 pixels past the window;
+        // the border covers anything that lands beyond its right edge.
+        frameBuffer.fill(borderColor, screenEnd, rowOffset + w);
 
         // CSEL (bit 3 of $D016) narrows the display window to 38 columns: the
         // border unit covers 7 pixels on the left and 9 on the right. It paints
@@ -370,34 +385,33 @@ export class VICIIRenderer {
     // @private
     //
     renderDisplayWindow(frameBuffer, memory, canvasY, rasterLine) {
-        // Get graphics mode
         const mode = this.getGraphicsMode(memory);
-        if (mode === MODE_INVALID) return; // Black screen for invalid modes (already bg)
-
-        // Get memory addresses and scroll values once for this scanline
         const memAddrs = this.getMemoryAddresses(memory);
         const { xscroll, yscroll } = this.getScrollValues(memory);
-        const rsel = (memory.io[0x011] & 0x08) !== 0;
 
-        // Calculate which character row this scanline belongs to
-        // Screen area starts at canvasY = borderY
-        // YSCROLL shifts the display down by 0-7 pixels within the display window
-        const screenY = canvasY - this.borderY;  // 0-199 within the 200-line screen area
+        // Each text row starts on its Bad Line, raster 48 + YSCROLL + 8n, but
+        // the display window opens at raster 51 (screenY 0). The default
+        // YSCROLL of 3 therefore aligns row 0 with the top of the window.
+        const screenY = canvasY - this.borderY;
+        const adjustedScreenY = screenY + 3 - yscroll;
 
-        // RSEL (24-row) masking
-        // When RSEL=0, the display window is 192 lines high (24 rows).
-        // The top 4 and bottom 4 lines of the 200-line area are covered by border.
-        if (!rsel && (screenY < 4 || screenY >= 196)) return;
+        // Outside the 25 fetched rows the VIC is idle and shows background,
+        // and invalid modes are black; sprites still appear in both cases.
+        if (adjustedScreenY >= 0 && adjustedScreenY < 200 && mode !== MODE_INVALID) {
+            const charRow = adjustedScreenY >> 3;
+            const charPixelY = adjustedScreenY & 7;
+            this.renderGraphicsScanline(
+                frameBuffer, memory, canvasY, charRow, charPixelY, memAddrs, xscroll, mode);
+        }
 
-        const adjustedScreenY = screenY - yscroll;  // Adjust for vertical scroll
+        this.renderSpriteScanline(frameBuffer, memory, canvasY, rasterLine, memAddrs);
+    }
 
-        // If adjusted Y is outside the 0-199 range, this scanline shows background only
-        if (adjustedScreenY < 0 || adjustedScreenY >= 200) return;
-
-        const charRow = (adjustedScreenY >> 3);          // Character row 0-24
-        const charPixelY = adjustedScreenY & 7;          // Pixel row within character 0-7
-
-        // Render the appropriate graphics mode for this scanline
+    //
+    // Render one scanline of character or bitmap graphics in the given mode
+    // @private
+    //
+    renderGraphicsScanline(frameBuffer, memory, canvasY, charRow, charPixelY, memAddrs, xscroll, mode) {
         switch (mode) {
             case MODE_STANDARD_CHARACTER:
                 this.renderScanlineStandardCharacter(frameBuffer, memory, canvasY, charRow, charPixelY, memAddrs, xscroll);
@@ -415,9 +429,6 @@ export class VICIIRenderer {
                 this.renderScanlineExtendedBackground(frameBuffer, memory, canvasY, charRow, charPixelY, memAddrs, xscroll);
                 break;
         }
-
-        // Render sprites for this scanline
-        this.renderSpriteScanline(frameBuffer, memory, canvasY, rasterLine, memAddrs);
     }
 
     //
@@ -699,6 +710,9 @@ export class VICIIRenderer {
         const w = this.width;
         const rowOffset = canvasY * w;
         const collision = this.spriteCollisionBuffer;
+        // Sprites still collide under the side border, but it hides them.
+        const windowLeft = this.borderX;
+        const windowRight = this.borderX + this.screenWidth;
 
         // Render sprites in reverse order (7 to 0) so lower-numbered sprites appear on top
         for (let sprite = 7; sprite >= 0; sprite--) {
@@ -767,7 +781,9 @@ export class VICIIRenderer {
                                 // Behind-background sprites only show on background pixels
                                 if (isBehindBackground) continue;
                             }
-                            frameBuffer[rowOffset + px] = pixelColor;
+                            if (px >= windowLeft && px < windowRight) {
+                                frameBuffer[rowOffset + px] = pixelColor;
+                            }
                         }
                     }
                 } else {
@@ -791,7 +807,9 @@ export class VICIIRenderer {
                                 io[0x01F] |= spriteBit;
                                 if (isBehindBackground) continue;
                             }
-                            frameBuffer[rowOffset + px] = spriteColor;
+                            if (px >= windowLeft && px < windowRight) {
+                                frameBuffer[rowOffset + px] = spriteColor;
+                            }
                         }
                     }
                 }

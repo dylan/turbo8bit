@@ -403,6 +403,29 @@ export class SIDPlayer {
         // Register snapshot for visualization
         this.registers = new Uint8Array(32);
         this.registerWriteLog = [];
+
+        // Listening aids that outlive any one tune's machine.
+        this.voiceMuted = [false, false, false];
+        this.analyser = null;
+    }
+
+    //
+    // Silence one voice in the mix, e.g. to hear the bass line on its own.
+    // The voice keeps running, so the tune still sounds right when unmuted.
+    // @param {number} voice - 0-2
+    // @param {boolean} muted
+    //
+    setVoiceMuted(voice, muted) {
+        this.voiceMuted[voice] = !!muted;
+        if (this.machine) this.machine.sid.voice[voice].muted = !!muted;
+    }
+
+    //
+    // The AnalyserNode the output passes through once playback has started,
+    // for drawing an oscilloscope; null without Web Audio analysis.
+    //
+    getAnalyser() {
+        return this.analyser;
     }
 
     //
@@ -463,6 +486,9 @@ export class SIDPlayer {
     commitPlayback(playback) {
         this.stop();
         this.machine = playback.machine;
+        this.voiceMuted.forEach((muted, voice) => {
+            this.machine.sid.voice[voice].muted = muted;
+        });
         this.sidFile = playback.tune;
         this.currentSong = playback.song;
         this.registers = playback.registers;
@@ -627,6 +653,11 @@ export class SIDPlayer {
         if (this.audioContext.state !== 'running') {
             throw new Error('The audio context could not start playback');
         }
+        if (!this.analyser && typeof this.audioContext.createAnalyser === 'function') {
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 2048;
+            this.analyser.connect(this.audioContext.destination);
+        }
 
         // Handle sample rate change
         if (this.audioContext.sampleRate !== this.sampleRate) {
@@ -708,7 +739,7 @@ export class SIDPlayer {
         };
         this.useWorklet = true;
         this.isPlaying = true;
-        node.connect(context.destination);
+        node.connect(this.analyser ?? context.destination);
         this.checkPlaybackGeneration(generation);
     }
 
@@ -755,7 +786,7 @@ export class SIDPlayer {
         };
         this.useWorklet = false;
         this.isPlaying = true;
-        node.connect(this.audioContext.destination);
+        node.connect(this.analyser ?? this.audioContext.destination);
         this.checkPlaybackGeneration(generation);
     }
 
@@ -832,6 +863,8 @@ export class SIDPlayer {
             released: this.sidFile ? this.sidFile.released : '',
             frameCount: frameCount,
             elapsedTime: elapsedSeconds,
+            // Turns frequency registers into pitches: f = reg * clock / 2^24.
+            clockFrequency: this.machine ? this.machine.clockFrequency : CLOCK_PAL,
             voices: [
                 this.getVoiceState(0),
                 this.getVoiceState(1),
@@ -861,6 +894,10 @@ export class SIDPlayer {
         else if (ctrl & 0x40) waveform = 'PULSE';
         else if (ctrl & 0x20) waveform = 'SAW';
         else if (ctrl & 0x10) waveform = 'TRI';
+        // Several waveform bits at once select a combined waveform.
+        const combined = [[0x80, 'NOI'], [0x40, 'PUL'], [0x20, 'SAW'], [0x10, 'TRI']]
+            .filter(([bit]) => ctrl & bit).map(([, name]) => name);
+        if (combined.length > 1) waveform = combined.join('+');
 
         let envelope = 0;
         if (this.machine && this.machine.sid) {

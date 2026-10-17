@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_c64_screen.html" import c64_screen %}
 
 {% block title %}Commodore 64 Emulator - Turbo8bit{% endblock %}
 {% block description %}Run BASIC programs in an in-browser Commodore 64 emulator. Type, edit, and execute classic C64 BASIC V2 code with a fully interactive virtual machine.{% endblock %}
@@ -8,19 +9,22 @@
     <!-- Emulator Panel -->
     <div class="c64-emulator-column">
         <div class="c64-emulator-panel">
-            <div class="panel-header">
-                <h2>C64 SCREEN</h2>
+            {{ c64_screen() }}
+
+            <div class="demo-reel-bar" id="demoReelBar" hidden>
+                <span class="demo-reel-label">DEMO REEL</span>
+                <span class="demo-reel-title" id="demoReelTitle" aria-live="polite"></span>
+                <span class="demo-reel-progress" aria-hidden="true"><span id="demoReelProgress"></span></span>
+                <button type="button" id="demoReelNext" title="Play the next sample">Next ⏭</button>
+                <button type="button" id="demoReelStop" title="Stop the demo reel">Stop ⏹</button>
             </div>
 
-            <canvas id="screen" width="384" height="272" tabindex="0"
-                    aria-label="Commodore 64 screen. Focus it and type to use the C64 keyboard."></canvas>
-            
             <div class="c64-controls">
-                <button onclick="typeCommand('RUN\n')">RUN</button>
-                <button onclick="stopProgram()">STOP</button>
-                <button onclick="typeCommand('LIST\n')">LIST</button>
+                <button onclick="typeCommand('RUN\n')" title="Type RUN: start the program in memory">RUN</button>
+                <button onclick="stopProgram()" title="Press RUN/STOP to break into a running program">STOP</button>
+                <button onclick="typeCommand('LIST\n')" title="Type LIST: show the program in memory">LIST</button>
                 <button id="muteBtn" class="mute-btn muted" aria-pressed="false">🔇 MUTED</button>
-                <button class="reset-btn" onclick="resetEmulator()">RESET</button>
+                <button class="reset-btn" onclick="resetEmulator()" title="Switch the C64 off and on again">RESET</button>
             </div>
             <p id="emulator-status" class="c64-status" role="status"></p>
             
@@ -32,7 +36,9 @@
             </div>
             
             <div class="c64-info">
-                <p>Focus the screen to type commands. Press <strong>Escape</strong> (RUN/STOP) to break loops.</p>
+                <p>Click the screen and type. <kbd>Esc</kbd> is RUN/STOP, <kbd>Home</kbd> is CLR/HOME,
+                    <kbd>Alt</kbd> is the C= key. Paste a listing with <kbd>Ctrl</kbd>+<kbd>V</kbd>,
+                    or drop a <code>.prg</code> or <code>.crt</code> file onto the screen.</p>
             </div>
         </div>
     </div>
@@ -48,8 +54,23 @@
         </div>
         
         <div id="basic-editor"></div>
+
+        <details class="program-view" id="programView" open></details>
     </div>
 </div>
+
+<section class="sample-gallery" aria-labelledby="galleryTitle">
+    <div class="gallery-header">
+        <div>
+            <h2 id="galleryTitle">Sample gallery</h2>
+            <p>Every preview was recorded on this emulator. Choose one to load it into the editor and run it,
+                then watch it from the inside in the program view.</p>
+        </div>
+        <button type="button" id="demoReelBtn" class="demo-reel-btn" aria-pressed="false"
+                title="Run the graphics samples one after another">▶ Play the demo reel</button>
+    </div>
+    <div id="sampleGallery"></div>
+</section>
 
 <!-- BASIC Quick Start Guide -->
 <div class="basic-quickstart">
@@ -117,8 +138,37 @@
                 <li><code class="basic-code"><span class="keyword">POKE</span></code> — Write to memory<br>
                     <code class="basic-code"><span class="keyword">POKE</span> <span class="number">53280</span>, <span class="number">0</span></code> <em>(border black)</em></li>
                 <li><code class="basic-code"><span class="keyword">PEEK</span></code> — Read from memory<br>
-                    <code class="basic-code"><span class="variable">X</span> = <span class="keyword">PEEK</span>(<span class="number">53280</span>)</code></li>
+                    <code class="basic-code"><span class="variable">X</span> = <span class="keyword">PEEK</span>(<span class="number">53280</span>)</code>
+                    <em>(254 after start-up: the unused top four bits read as 1)</em></li>
             </ul>
+            <p>Not sure which address to POKE? Point at the screen: the inspector under it shows the screen
+                and colour memory behind every character, and the sprite X/Y of any spot.</p>
+        </div>
+
+        <div class="quickstart-col">
+            <h3>Colour &amp; Control Codes</h3>
+            <p>Printed listings write the C64's special keys inside quotes as names in braces. The editor
+                understands them:</p>
+            <pre class="basic-code"><span class="line-num">10</span> <span class="keyword">PRINT</span> <span class="string">"<span class="control">{CLR}</span><span class="control">{YEL}</span>HELLO <span class="control">{RVS ON}</span>THERE"</span></pre>
+            <ul>
+                <li><code>{CLR}</code> clear screen, <code>{HOME}</code> cursor home</li>
+                <li><code>{RED}</code> <code>{GRN}</code> <code>{BLU}</code> <code>{YEL}</code> <code>{WHT}</code> <code>{BLK}</code> … colours</li>
+                <li><code>{RVS ON}</code> / <code>{RVS OFF}</code> reverse text</li>
+                <li><code>{DOWN}</code> <code>{UP}</code> <code>{LEFT}</code> <code>{RIGHT}</code>, repeated as <code>{3 DOWN}</code></li>
+                <li><code>{147}</code> any code by number</li>
+            </ul>
+
+            <h3>Your Keyboard as a C64</h3>
+            <table class="basic-commands">
+                <tr><td><kbd>Esc</kbd></td><td>RUN/STOP</td></tr>
+                <tr><td><kbd>Home</kbd></td><td>CLR/HOME (with <kbd>Shift</kbd>: clear screen)</td></tr>
+                <tr><td><kbd>Backspace</kbd></td><td>INST/DEL</td></tr>
+                <tr><td><kbd>Alt</kbd></td><td>C= (Commodore key)</td></tr>
+                <tr><td><kbd>Ctrl</kbd></td><td>CTRL</td></tr>
+                <tr><td><kbd>F1</kbd>–<kbd>F8</kbd></td><td>Function keys</td></tr>
+            </table>
+            <p>The editor works like the C64's own: lines are kept in number order, typing a line number
+                again replaces that line, and a number on its own deletes it.</p>
         </div>
     </div>
 </div>
@@ -128,10 +178,16 @@
 <script type="module">
 import { C64Emulator } from "{{ url_for('static', filename='js/emulator/emulator.js') }}";
 import { CodeEditor } from "{{ url_for('static', filename='js/emulator/editor.js') }}";
-import { BASIC_START } from "{{ url_for('static', filename='js/emulator/basic-tokenizer.js') }}";
+import { detokenize, expandControlCodes } from "{{ url_for('static', filename='js/emulator/basic-tokenizer.js') }}";
 import { ExampleLibrary } from "{{ url_for('static', filename='js/examples.js') }}";
+import { attachScreenTools } from "{{ url_for('static', filename='js/lab/screen-tools.js') }}";
+import { attachProgramFiles } from "{{ url_for('static', filename='js/lab/program-files.js') }}";
+import { attachProgramView } from "{{ url_for('static', filename='js/lab/program-view.js') }}";
+import { SampleGallery, DemoReel } from "{{ url_for('static', filename='js/lab/sample-gallery.js') }}";
 
 const DEFAULT_EXAMPLE = 'helloWorld';
+const PREVIEW_BASE = "{{ url_for('static', filename='basic/previews/') }}";
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
 const examples = new ExampleLibrary(
     "{{ url_for('static', filename='basic/index.json') }}",
@@ -146,30 +202,182 @@ emulator.enableKeyboard();
 window.emulator = emulator;
 const emulatorStatus = document.getElementById('emulator-status');
 emulator.bindMuteButton(document.getElementById('muteBtn'), emulatorStatus);
+attachScreenTools(emulator, {
+    frame: document.getElementById('screenFrame'),
+    toolbar: document.getElementById('screenToolbar'),
+    inspector: document.getElementById('screenInspector'),
+    status: emulatorStatus
+});
 
 // Initialize BASIC editor
 const editor = new CodeEditor('#basic-editor', {
     language: 'basic',
     fontSize: 13,
     onLoad: (result) => {
+        demoReel.stop();
         loadBasicProgram(result);
     }
 });
 window.editor = editor;
+window.programView = attachProgramView(emulator, editor, document.getElementById('programView'));
 
 // Track which example is currently loaded
 let currentExampleKey = null;
+let currentExampleSource = null;
 let actionId = 0;
 
 const sampleSelect = document.getElementById('sampleSelect');
 
+//
+// Tokenize the editor for saving as a .prg, reporting errors in the editor.
+// @returns {Uint8Array|null}
+//
+function buildPrg() {
+    const result = editor.tokenize();
+    const errors = result.errors.filter(e => e.type === 'error');
+    if (errors.length > 0) {
+        editor.showErrors(errors);
+        emulatorStatus.textContent = 'Fix the errors marked in the editor first.';
+        return null;
+    }
+    if (result.bytes.length <= 4) {
+        emulatorStatus.textContent = 'There is no numbered program to save yet.';
+        return null;
+    }
+    return result.bytes;
+}
+
+const programFiles = attachProgramFiles(editor, {
+    draftKey: 'turbo8bit.basic.draft',
+    extension: 'bas',
+    fileName: () => examples.get(currentExampleKey)?.file?.replace(/\.bas$/, '') ?? 'program',
+    buildPrg,
+    openPrg: detokenize,
+    say: message => { emulatorStatus.textContent = message; },
+    isPristine: text => currentExampleKey !== null && text === currentExampleSource
+});
+
+// The gallery is built once the sample index has loaded.
+let gallery = null;
+// True only while the demo reel itself is putting a sample in the editor,
+// so that change is not mistaken for the visitor taking over.
+let reelSettingEditor = false;
+const reelBar = document.getElementById('demoReelBar');
+const reelButton = document.getElementById('demoReelBtn');
+
+const demoReel = new DemoReel({
+    play: id => playSample(id, { fromReel: true }),
+    onChange: showDemoReel
+});
+
+function showDemoReel(reel) {
+    reelBar.hidden = !reel.active;
+    reelButton.setAttribute('aria-pressed', String(reel.active));
+    reelButton.textContent = reel.active ? '⏹ Stop the demo reel' : '▶ Play the demo reel';
+    if (!reel.active) return;
+    const title = examples.get(reel.current)?.title ?? '';
+    document.getElementById('demoReelTitle').textContent = `${reel.index + 1} of ${reel.ids.length}: ${title}`;
+    const progress = document.getElementById('demoReelProgress');
+    progress.classList.remove('running');
+    if (reel.playing) {
+        progress.style.setProperty('--demo-seconds', `${reel.seconds}s`);
+        void progress.offsetWidth;  // restart the CSS animation
+        progress.classList.add('running');
+    }
+}
+
+reelButton.addEventListener('click', () => {
+    if (demoReel.active) {
+        demoReel.stop();
+        return;
+    }
+    if (!mayReplaceEditor()) return;
+    demoReel.start();
+    showScreen();
+});
+document.getElementById('demoReelNext').addEventListener('click', () => demoReel.next());
+document.getElementById('demoReelStop').addEventListener('click', () => demoReel.stop());
+// Editing the code, typing, pasting or dropping a file on the C64, or pausing
+// it takes over from the reel.
+editor.onValueChange(() => {
+    if (!reelSettingEditor) demoReel.stop();
+});
+document.addEventListener('keydown', event => {
+    if (event.defaultPrevented && demoReel.active) demoReel.stop();
+});
+document.addEventListener('paste', () => demoReel.stop());
+// The emulator's drop handler stops propagation, so listen on the screen.
+emulator.canvas.addEventListener('drop', () => demoReel.stop());
+emulator.onStateChange(() => {
+    if (emulator.isPaused()) demoReel.stop();
+});
+
+function buildGallery() {
+    const all = examples.all();
+    gallery = new SampleGallery(document.getElementById('sampleGallery'), {
+        examples: all,
+        preview: (id, still) => `${PREVIEW_BASE}${id}${still ? '-still' : ''}.webp`,
+        onRun: id => playSample(id)
+    });
+    demoReel.ids = all.filter(example => example.demo).map(example => example.id);
+}
+
+//
+// Ask before a sample replaces code the visitor has written.
+//
+function mayReplaceEditor() {
+    const text = editor.getValue();
+    if (!text.trim() || (currentExampleKey !== null && text === currentExampleSource)) return true;
+    return confirm('Replace the code in the editor with a sample? ' +
+        'To keep your code, choose Cancel and save it from the File menu first.');
+}
+
+function showScreen() {
+    document.getElementById('screenFrame').scrollIntoView({
+        behavior: reducedMotion() ? 'auto' : 'smooth',
+        block: 'center'
+    });
+}
+
+//
+// Put a sample in the editor and run it, as choosing it and pressing Run does.
+//
+async function playSample(id, { fromReel = false } = {}) {
+    if (!fromReel) {
+        demoReel.stop();
+        if (!mayReplaceEditor()) return;
+    }
+    sampleSelect.value = id;
+    await loadSelectedSample({ confirmed: true, fromReel });
+    if (currentExampleKey !== id) {
+        // A reel sample that never loaded must not start the reel's clock.
+        if (fromReel) throw new Error(`The sample ${id} did not load.`);
+        return;
+    }
+    if (!fromReel) {
+        showScreen();
+        // Keys reach the C64 from the screen, not from the card's button.
+        emulator.canvas.focus({ preventScroll: true });
+    }
+    await loadBasicProgram(editor.tokenize());
+    if (!fromReel && currentExampleKey === id && examples.get(id)?.sound && !emulator.audioEnabled) {
+        emulatorStatus.textContent = 'This sample makes sound. Press 🔇 MUTED under the screen to hear it.';
+    }
+}
+window.playSample = playSample;
+
 async function initExamples() {
+    // Start fetching the index before restoring, so the sample list fills
+    // while a shared program or saved draft is put into the editor.
+    const restoring = programFiles.restore();
     try {
         await examples.populate(sampleSelect);
+        buildGallery();
+        const restored = await restoring;
         if (editor.getValue()) {
             currentExampleKey = null;
             sampleSelect.value = '';
-            emulatorStatus.textContent = 'Samples are ready. Your code has been kept.';
+            emulatorStatus.textContent = restored ?? 'Samples are ready. Your code has been kept.';
             return;
         }
         sampleSelect.value = DEFAULT_EXAMPLE;
@@ -181,9 +389,16 @@ async function initExamples() {
 }
 initExamples();
 
-// Load sample from dropdown
-async function loadSelectedSample() {
+// Load the sample chosen in the dropdown. `confirmed` means the caller has
+// already made sure the visitor's own code may be replaced; `fromReel` that
+// the demo reel is loading it, so the reel carries on.
+async function loadSelectedSample({ confirmed = false, fromReel = false } = {}) {
     const id = sampleSelect.value;
+    if (!fromReel) demoReel.stop();
+    if (!confirmed && !mayReplaceEditor()) {
+        sampleSelect.value = currentExampleKey ?? '';
+        return;
+    }
     const previousSource = editor.getValue();
     try {
         const selection = await examples.select(id);
@@ -195,7 +410,14 @@ async function loadSelectedSample() {
         }
         actionId++;
         currentExampleKey = id;
-        editor.setValue(selection.source);
+        reelSettingEditor = fromReel;
+        try {
+            editor.setValue(selection.source);
+        } finally {
+            reelSettingEditor = false;
+        }
+        currentExampleSource = editor.getValue();
+        gallery?.setActive(id);
         // Direct-mode samples have no line numbers.
         editor.setHighlightErrors(!selection.example.direct);
         emulatorStatus.textContent = '';
@@ -227,9 +449,13 @@ async function runWhenReady(action, { reset = false } = {}) {
     }
 }
 
-window.typeCommand = text => runWhenReady(() => emulator.typeText(text));
+window.typeCommand = text => {
+    demoReel.stop();
+    return runWhenReady(() => emulator.typeText(text));
+};
 
 function stopProgram() {
+    demoReel.stop();
     actionId++;
     emulator.breakExecution();
     emulatorStatus.textContent = '';
@@ -237,6 +463,7 @@ function stopProgram() {
 window.stopProgram = stopProgram;
 
 window.resetEmulator = () => {
+    demoReel.stop();
     actionId++;
     emulator.reset();
     emulatorStatus.textContent = '';
@@ -248,11 +475,14 @@ function loadBasicProgram(result) {
     if (!direct) {
         const errors = result.errors.filter(e => e.type === 'error');
         if (errors.length > 0) {
-            alert('Cannot load program with errors:\n' + errors.map(e => `Line ${e.line}: ${e.message}`).join('\n'));
+            editor.showErrors(errors);
+            emulatorStatus.textContent = `Fix ${errors.length === 1 ? 'the error' : `the ${errors.length} errors`} ` +
+                'marked in the editor, then press Run again.';
             return;
         }
         if (result.bytes.length <= 4) {
-            alert('No program to load');
+            emulatorStatus.textContent = 'There is no program to run yet: type some numbered lines, ' +
+                'such as 10 PRINT "HI".';
             return;
         }
     }
@@ -261,21 +491,12 @@ function loadBasicProgram(result) {
         if (direct) {
             const lines = source.split('\n').filter(line => line.trim());
             emulator.cancelTyping();
-            emulator.typeText(lines.join('\n') + '\n', { lineDelay: 1500 });
+            emulator.typeText(expandControlCodes(lines.join('\n')) + '\n', { lineDelay: 400 });
             return;
         }
 
-        const bytes = result.bytes;
-        const loadAddress = emulator.machine.loadPrg(bytes);
-        const endAddress = loadAddress + bytes.length - 2;
-        const ram = emulator.machine.ram;
-        ram[0x2b] = BASIC_START & 0xff;
-        ram[0x2c] = BASIC_START >> 8;
-        // Variables, arrays and string storage initially follow the new program.
-        for (const pointer of [0x2d, 0x2f, 0x31]) {
-            ram[pointer] = endAddress & 0xff;
-            ram[pointer + 1] = (endAddress >> 8) & 0xff;
-        }
+        // Loading sets the BASIC pointers past the program, as LOAD does.
+        emulator.machine.loadProgram(result.bytes);
         emulator.typeText('RUN\n');
     }, { reset: !direct });
 }

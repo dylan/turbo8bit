@@ -229,13 +229,18 @@ export class EnvelopeGenerator {
 
         if (this.envelopePipeline !== 0 && (--this.envelopePipeline === 0)) {
             if (this.counterEnabled) {
+                // The counter is 8 bits wide. Gate changes timed against a
+                // step flip it 0xff->0x00 or 0x00->0xff (the "ADSR bug"),
+                // and some players rely on that; unwrapped it runs away.
                 if (this.state === EnvelopeState.ATTACK) {
-                    if (++this.envelopeCounter === 0xff) {
+                    this.envelopeCounter = (this.envelopeCounter + 1) & 0xff;
+                    if (this.envelopeCounter === 0xff) {
                         this.nextState = EnvelopeState.DECAY_SUSTAIN;
                         this.statePipeline = 3;
                     }
                 } else if (this.state === EnvelopeState.DECAY_SUSTAIN || this.state === EnvelopeState.RELEASE) {
-                    if (--this.envelopeCounter === 0x00) {
+                    this.envelopeCounter = (this.envelopeCounter - 1) & 0xff;
+                    if (this.envelopeCounter === 0x00) {
                         this.counterEnabled = false;
                     }
                 }
@@ -352,13 +357,55 @@ export class EnvelopeGenerator {
 // WAVEFORM GENERATOR
 // ============================================================================
 
+// Cycles before a deselected waveform's output starts to fade, then between
+// each fading step (libsidplayfp, measured on warm 6581R3 and 8580R5 chips).
 const FLOATING_OUTPUT_TTL_6581R3 = 54000;
+const FLOATING_OUTPUT_FADE_6581R3 = 1400;
 const FLOATING_OUTPUT_TTL_8580R5 = 800000;
+const FLOATING_OUTPUT_FADE_8580R5 = 50000;
+// Cycles of held test bit before the noise register starts filling with
+// ones, then between each step.
 const SHIFT_REGISTER_RESET_6581R3 = 50000;
+const SHIFT_REGISTER_FADE_6581R3 = 15000;
 const SHIFT_REGISTER_RESET_8580R5 = 986000;
+const SHIFT_REGISTER_FADE_8580R5 = 314300;
 
 // Triangle+saw, pulse+triangle, pulse+saw, pulse+triangle+saw, and pulse+noise.
 const PULLDOWN_TABLE_INDEX = [-1, -1, -1, 0, -1, 1, 2, 3, -1, -1, -1, 0, 4, 1, 2, 3];
+
+//
+// The noise generator is a 23-bit shift register, numbered as in current
+// libsidplayfp: bit 22 is the input, the register shifts right, and the new
+// bit 22 is (bit 0 OR test) XOR bit 5. Register bits 2, 4, 8, 11, 13, 17, 20
+// and 22 drive waveform output bits 11 down to 4; the low four are grounded.
+//
+const NOISE_TAP_MASK = ~((1 << 2) | (1 << 4) | (1 << 8) | (1 << 11) |
+    (1 << 13) | (1 << 17) | (1 << 20) | (1 << 22));
+
+// Waveform output bits 11..4 back onto the register bits that drive them.
+function noiseWriteback(output) {
+    return ((output & (1 << 11)) >> 9) |
+        ((output & (1 << 10)) >> 6) |
+        ((output & (1 << 9)) >> 1) |
+        ((output & (1 << 8)) << 3) |
+        ((output & (1 << 7)) << 6) |
+        ((output & (1 << 6)) << 11) |
+        ((output & (1 << 5)) << 15) |
+        ((output & (1 << 4)) << 18);
+}
+
+// Whether a shift latches the combined-waveform output back into the noise
+// register. libsidplayfp matched each case against test programs run on real
+// chips, so the special cases are empirical.
+function noiseWritesBack(waveformOld, waveformNew, is6581) {
+    if (waveformOld <= 8 || waveformNew < 8) return false;
+    if (waveformNew === 8 && waveformOld !== 0xf) return false;
+    if (is6581 && ((((waveformOld & 3) === 1) && ((waveformNew & 3) === 2)) ||
+        (((waveformOld & 3) === 2) && ((waveformNew & 3) === 1)))) {
+        return false;
+    }
+    return waveformOld !== 0xc && waveformNew !== 0xc;
+}
 
 export class WaveformGenerator {
     constructor() {
@@ -388,6 +435,7 @@ export class WaveformGenerator {
         this.sync = false;
         this.testOrReset = false;
         this.msbRising = false;
+        this.msbPulldown = false;
         this.is6581 = true;
         this.prevVoice = null;
         this.nextVoice = null;
@@ -407,6 +455,9 @@ export class WaveformGenerator {
         this.wave = this.modelWave ? this.modelWave[this.waveform & 3] : null;
         const index = PULLDOWN_TABLE_INDEX[this.waveform];
         this.pulldown = this.modelPulldown && index >= 0 ? this.modelPulldown[index] : null;
+        // On the 6581, combined waveforms with sawtooth can pull the
+        // accumulator's top bit low.
+        this.msbPulldown = this.is6581 && (this.waveform & 2) !== 0;
     }
 
     setOtherWaveforms(prev, next) {
@@ -426,9 +477,7 @@ export class WaveformGenerator {
         this.test = false;
         this.sync = false;
         this.msbRising = false;
-        this.shiftRegister = 0x7fffff;
-        this.shiftLatch = 0;
-        this.shiftPipeline = 0;
+        this.msbPulldown = false;
         this.pulseOutput = 0xfff;
         this.waveformOutput = 0;
         this.osc3 = 0;
@@ -437,7 +486,6 @@ export class WaveformGenerator {
         this.noNoise = 0xfff;
         this.noPulse = 0xfff;
         this.ringMsbMask = 0;
-        this.testOrReset = false;
         this.triSawPipeline = 0x555;
         this.noiseOutput = 0;
         this.noNoiseOrNoiseOutput = this.noNoise;
@@ -445,6 +493,12 @@ export class WaveformGenerator {
             this.wave = this.modelWave[0];
         }
         this.pulldown = null;
+        // Releasing reset clocks the noise register once, as releasing test does.
+        this.shiftRegister = 0x7fffff;
+        this.testOrReset = true;
+        this.shiftLatch = this.shiftRegister;
+        this.shiftPhase2(0, 0);
+        this.shiftPipeline = 0;
     }
 
     clock() {
@@ -498,7 +552,7 @@ export class WaveformGenerator {
                 this.osc3 = this.waveformOutput;
             }
 
-            if (this.is6581 && (this.waveform & 0x2) && (this.waveformOutput & 0x800) === 0) {
+            if (this.msbPulldown && (this.waveformOutput & 0x800) === 0) {
                 this.msbRising = false;
                 this.accumulator &= 0x7fffff;
             }
@@ -513,29 +567,36 @@ export class WaveformGenerator {
     }
 
     synchronize() {
-        if (this.msbRising && this.nextVoice && this.nextVoice.sync) {
+        // A sync source that is itself synced on the same cycle as its MSB
+        // rises does not sync its destination (verified on chips via OSC3).
+        if (this.msbRising && this.nextVoice && this.nextVoice.sync &&
+            !(this.sync && this.prevVoice && this.prevVoice.msbRising)) {
             this.nextVoice.accumulator = 0;
         }
     }
 
     shiftPhase2(waveformOld, waveformNew) {
-        const bit0 = ((this.shiftLatch >> 22) ^ (this.shiftLatch >> 17)) & 1;
-        this.shiftRegister = ((this.shiftLatch << 1) | (this.testOrReset ? 0 : bit0)) & 0x7fffff;
-        if (waveformNew >= 8) {
-            this.setNoiseOutput();
+        if (noiseWritesBack(waveformOld, waveformNew, this.is6581)) {
+            this.shiftLatch = (this.shiftRegister & NOISE_TAP_MASK) | noiseWriteback(this.waveformOutput);
         }
+        // Test (or reset) forces a one into the input, which is how players
+        // revive noise that a combined waveform has cleared to zero.
+        const input = ((this.testOrReset ? 1 : 0) | this.shiftLatch) ^ (this.shiftLatch >> 5);
+        this.shiftRegister = (this.shiftLatch >>> 1) | ((input & 1) << 22);
+        this.setNoiseOutput();
     }
 
     setNoiseOutput() {
+        const register = this.shiftRegister;
         this.noiseOutput =
-            ((this.shiftRegister & (1 << 2)) << 9) |
-            ((this.shiftRegister & (1 << 4)) << 6) |
-            ((this.shiftRegister & (1 << 8)) << 1) |
-            ((this.shiftRegister & (1 << 11)) >> 3) |
-            ((this.shiftRegister & (1 << 13)) >> 6) |
-            ((this.shiftRegister & (1 << 17)) >> 12) |
-            ((this.shiftRegister & (1 << 20)) >> 16) |
-            ((this.shiftRegister & (1 << 22)) >> 22);
+            ((register & (1 << 2)) << 9) |
+            ((register & (1 << 4)) << 6) |
+            ((register & (1 << 8)) << 1) |
+            ((register & (1 << 11)) >> 3) |
+            ((register & (1 << 13)) >> 6) |
+            ((register & (1 << 17)) >> 11) |
+            ((register & (1 << 20)) >> 15) |
+            ((register & (1 << 22)) >> 18);
         this.setNoNoiseOrNoiseOutput();
     }
 
@@ -543,35 +604,36 @@ export class WaveformGenerator {
         this.noNoiseOrNoiseOutput = this.noNoise | this.noiseOutput;
     }
 
+    // Combined with another waveform, the noise output is wired back into the
+    // register: low output bits pull register bits low, and repeated shifts
+    // can clear it entirely. During shift phase 1, or while test is held,
+    // the combined output drives the noise bits directly.
     writeShiftRegister() {
-        if ((this.waveform & 8) !== 0 && (this.waveformOutput & 0x800) === 0) {
-            const bit20 = (this.waveformOutput & (1 << 11)) !== 0;
-            const bit18 = (this.waveformOutput & (1 << 10)) !== 0;
-            const bit14 = (this.waveformOutput & (1 << 9)) !== 0;
-            const bit11 = (this.waveformOutput & (1 << 8)) !== 0;
-            const bit9 = (this.waveformOutput & (1 << 7)) !== 0;
-            const bit5 = (this.waveformOutput & (1 << 5)) !== 0;
-            const bit2 = (this.waveformOutput & (1 << 4)) !== 0;
-            const bit0 = (this.waveformOutput & 1) !== 0;
-
-            if (!bit20) this.shiftRegister &= ~(1 << 2);
-            if (!bit18) this.shiftRegister &= ~(1 << 4);
-            if (!bit14) this.shiftRegister &= ~(1 << 8);
-            if (!bit11) this.shiftRegister &= ~(1 << 11);
-            if (!bit9) this.shiftRegister &= ~(1 << 13);
-            if (!bit5) this.shiftRegister &= ~(1 << 17);
-            if (!bit2) this.shiftRegister &= ~(1 << 20);
-            if (!bit0) this.shiftRegister &= ~(1 << 22);
+        if (this.waveform > 0x8) {
+            if (this.shiftPipeline !== 1 && !this.test) {
+                this.shiftRegister &= NOISE_TAP_MASK | noiseWriteback(this.waveformOutput);
+                this.noiseOutput &= this.waveformOutput;
+            } else {
+                this.noiseOutput = this.waveformOutput;
+            }
+            this.setNoNoiseOrNoiseOutput();
         }
     }
 
     waveBitfade() {
         this.waveformOutput &= this.waveformOutput >>> 1;
+        this.osc3 = this.waveformOutput;
+        if (this.waveformOutput !== 0) {
+            this.floatingOutputTtl = this.is6581 ? FLOATING_OUTPUT_FADE_6581R3 : FLOATING_OUTPUT_FADE_8580R5;
+        }
     }
 
     shiftregBitfade() {
+        this.shiftRegister |= this.shiftRegister >>> 1;
         this.shiftRegister |= 0x400000;
-        this.shiftRegister &= 0x7fffff;
+        if (this.shiftRegister !== 0x7fffff) {
+            this.shiftRegisterReset = this.is6581 ? SHIFT_REGISTER_FADE_6581R3 : SHIFT_REGISTER_FADE_8580R5;
+        }
     }
 
     writeFREQ_LO(value) { this.freq = (this.freq & 0xff00) | (value & 0xff); }
@@ -580,35 +642,36 @@ export class WaveformGenerator {
     writePW_HI(value) { this.pw = ((value << 8) & 0xf00) | (this.pw & 0x0ff); }
 
     writeCONTROL_REG(control) {
-        const waveformOld = this.waveform;
-        const waveformNew = (control >> 4) & 0x0f;
-        this.waveform = waveformNew;
+        const waveformPrev = this.waveform;
+        const testPrev = this.test;
+        this.waveform = (control >> 4) & 0x0f;
+        this.test = (control & 0x08) !== 0;
+        this.sync = (control & 0x02) !== 0;
+        // Ring modulation substitutes the accumulator MSB while sawtooth is off.
+        this.ringMsbMask = ((~control >> 5) & (control >> 2) & 1) << 23;
         this.updateWaveformTables();
 
-        this.ringMsbMask = (control & 0x04) && (waveformNew & 3) === 1 ? 0x800000 : 0;
-        this.sync = (control & 0x02) !== 0;
-        const testOld = this.test;
-        this.test = (control & 0x08) !== 0;
-
-        if (waveformNew >= 8) {
-            this.noNoise = 0;
-            this.setNoiseOutput();
-        } else {
-            this.noNoise = 0xfff;
+        if (this.waveform !== waveformPrev) {
+            this.noNoise = (this.waveform & 0x8) ? 0x000 : 0xfff;
             this.setNoNoiseOrNoiseOutput();
+            this.noPulse = (this.waveform & 0x4) ? 0x000 : 0xfff;
+            if (this.waveform === 0) {
+                // With no waveform selected the DAC input floats, holding the
+                // last output for a while before it fades.
+                this.floatingOutputTtl = this.is6581 ? FLOATING_OUTPUT_TTL_6581R3 : FLOATING_OUTPUT_TTL_8580R5;
+            }
         }
 
-        this.noPulse = (waveformNew & 4) ? 0 : 0xfff;
-
-        if (!testOld && this.test) {
-            this.accumulator = 0;
-            this.shiftRegisterReset = this.is6581 ? SHIFT_REGISTER_RESET_6581R3 : SHIFT_REGISTER_RESET_8580R5;
-            this.shiftPipeline = 0;
-            this.pulseOutput = 0xfff;
-        } else if (testOld && !this.test) {
-            this.shiftLatch = this.shiftRegister;
-            this.shiftPipeline = 1;
-            this.floatingOutputTtl = this.is6581 ? FLOATING_OUTPUT_TTL_6581R3 : FLOATING_OUTPUT_TTL_8580R5;
+        if (this.test !== testPrev) {
+            if (this.test) {
+                this.accumulator = 0;
+                this.shiftPipeline = 0;
+                this.shiftLatch = this.shiftRegister;
+                this.shiftRegisterReset = this.is6581 ? SHIFT_REGISTER_RESET_6581R3 : SHIFT_REGISTER_RESET_8580R5;
+            } else {
+                // Releasing test completes the second phase of a shift.
+                this.shiftPhase2(waveformPrev, this.waveform);
+            }
         }
     }
 
@@ -629,17 +692,19 @@ export class Voice {
         this.envelopeGenerator = new EnvelopeGenerator();
         this.wavDAC = null;
         this.envDAC = null;
+        // Listening aid, not hardware: silences the voice in the final mix.
+        this.muted = false;
     }
 
+    // Waveform DAC times envelope DAC: one voice swings 1.0 peak to peak at
+    // full envelope. The filter adds each chip's DC levels.
     output() {
         const wav = this.waveformGenerator.output();
         const env = this.envelopeGenerator.output();
         if (this.wavDAC && this.envDAC) {
             return this.wavDAC[wav] * this.envDAC[env];
         }
-        const wavNorm = (wav - 2048) / 2048;
-        const envNorm = env / 255;
-        return wavNorm * envNorm;
+        return (wav - 2048) / 4096 * (env / 255);
     }
 
     setWavDAC(dac) { this.wavDAC = dac; }

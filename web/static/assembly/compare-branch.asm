@@ -1,7 +1,7 @@
 ; Compare and Branch
 ; CPX compares X with a value by subtracting
 ; It sets flags but doesn't change X
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
     
     LDX #$05        ; Start with X = 5
 

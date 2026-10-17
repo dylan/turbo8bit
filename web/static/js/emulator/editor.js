@@ -26,6 +26,26 @@ import {
 // ============================================================================
 
 //
+// Where two versions of a text differ, as lines: lines [first, endOld) of
+// the old version became lines [first, endNew) of the new one, and the
+// lines before and after are the same in both.
+// @param {string[]} before
+// @param {string[]} after
+// @returns {{first: number, endOld: number, endNew: number}}
+//
+export function changedLines(before, after) {
+    let first = 0;
+    while (first < before.length && first < after.length && before[first] === after[first]) first++;
+    let endOld = before.length;
+    let endNew = after.length;
+    while (endOld > first && endNew > first && before[endOld - 1] === after[endNew - 1]) {
+        endOld--;
+        endNew--;
+    }
+    return { first, endOld, endNew };
+}
+
+//
 // CodeEditor - A syntax-highlighted code editor for C64 BASIC and Assembly
 //
 export class CodeEditor {
@@ -57,7 +77,11 @@ export class CodeEditor {
 
         this.tokenizer = new BASICTokenizer();
         this.errors = [];
+        // Errors reported by a build (assemble/tokenize) rather than live validation.
+        this.reportedErrors = [];
+        this.info = '';
         this.value = '';
+        this.changeListeners = new Set();
 
         this.init();
     }
@@ -115,6 +139,8 @@ export class CodeEditor {
 
         // Track highlighted line for debugging
         this.highlightedLine = null;
+        // Gutter marks from a running program, kept across gutter rebuilds
+        this.activity = { runningLine: null, heat: new Map() };
 
         // Search state
         this.searchText = '';
@@ -156,12 +182,12 @@ export class CodeEditor {
         // Leave paste native: the textarea normalizes line endings and retains undo.
         this.textarea.addEventListener('input', () => {
             this.value = this.textarea.value;
+            this.reportedErrors = [];
+            this.info = '';
             this.updateHighlight();
             this.updateLineNumbers();
             this.validateCode();
-            if (this.options.onChange) {
-                this.options.onChange(this.value);
-            }
+            this.notifyChange();
         });
 
         // Sync scroll between textarea and highlight
@@ -342,6 +368,32 @@ export class CodeEditor {
     }
 
     //
+    // Mark the gutter with what a running program is doing, without
+    // scrolling: the line being run, and how hot each line is.
+    // @param {number|null} runningLine - 1-based line, or null
+    // @param {Map<number, number>} heat - 1-based line to a level from 0 to 1
+    //
+    setLineActivity(runningLine, heat = new Map()) {
+        this.activity = { runningLine, heat };
+        this.applyLineActivity();
+    }
+
+    // Decorates the existing gutter rows, so a refresh several times a
+    // second neither rebuilds them nor disturbs a hovered error tooltip.
+    applyLineActivity(fromRow = 0) {
+        const { runningLine, heat } = this.activity;
+        const rows = this.lineNumbers.children;
+        for (let i = fromRow; i < rows.length; i++) {
+            const row = rows[i];
+            const level = heat.get(i + 1) ?? 0;
+            row.classList.toggle('running', runningLine === i + 1);
+            row.classList.toggle('hot', level > 0);
+            if (level > 0) row.style.setProperty('--heat', level.toFixed(2));
+            else row.style.removeProperty('--heat');
+        }
+    }
+
+    //
     // Insert text at cursor position
     // @param {string} text - Text to insert
     //
@@ -353,38 +405,52 @@ export class CodeEditor {
     }
 
     //
-    // Update the syntax highlighting overlay
+    // Update the syntax highlighting overlay. The overlay holds one element
+    // per line, so typing in a long program redraws only the lines between
+    // the unchanged start and end of the text. When the overlay is not what
+    // was last drawn, it is drawn afresh.
     // @private
     //
     updateHighlight() {
-        const source = this.textarea.value;
+        const lines = this.textarea.value.split('\n');
+        const shown = this.overlayLines;
+        const rows = this.highlight.children;
+        const drawLines = from => from.map(line => `<div>${this.highlightLineHtml(line)}\n</div>`).join('');
+        this.overlayLines = lines;
+        if (!shown || rows.length !== shown.length) {
+            this.highlight.innerHTML = drawLines(lines);
+            return;
+        }
 
-        // Get highlighted tokens
+        const { first, endOld, endNew } = changedLines(shown, lines);
+        for (let i = endOld - 1; i >= first; i--) rows[i].remove();
+        const html = drawLines(lines.slice(first, endNew));
+        if (!html) return;
+        if (first < rows.length) rows[first].insertAdjacentHTML('beforebegin', html);
+        else this.highlight.insertAdjacentHTML('beforeend', html);
+    }
+
+    // Both highlighters work a line at a time, so a line can be drawn alone.
+    highlightLineHtml(line) {
         const tokens = this.options.language === 'asm'
-            ? highlightAssembly(source)
-            : highlightBasic(source);
-
-        // Build HTML from tokens
+            ? highlightAssembly(line)
+            : highlightBasic(line);
         let html = '';
         for (const token of tokens) {
             const escaped = this.escapeHtml(token.text);
-            if (token.type === TokenType.DEFAULT || token.text === '\n') {
-                html += escaped;
-            } else {
-                html += `<span class="token-${token.type}">${escaped}</span>`;
-            }
+            html += token.type === TokenType.DEFAULT
+                ? escaped
+                : `<span class="token-${token.type}">${escaped}</span>`;
         }
-
-        // Add trailing newline to match textarea behavior
-        if (!html.endsWith('\n')) {
-            html += '\n';
-        }
-
-        this.highlight.innerHTML = html;
+        return html;
     }
 
     //
-    // Update line numbers
+    // Update line numbers. Typing in a long program must not rebuild
+    // thousands of rows, so the gutter is patched: rows come and go at the
+    // end (row i is always line i + 1), and only the rows whose marker or
+    // debug highlight may have changed are restyled. When the rows are not
+    // what was last built, they are built afresh.
     // @private
     //
     updateLineNumbers() {
@@ -393,20 +459,76 @@ export class CodeEditor {
             return;
         }
 
-        const lines = this.textarea.value.split('\n');
-        const errorLines = new Set(this.errors.map(e => e.line));
-
-        let html = '';
-        for (let i = 1; i <= lines.length; i++) {
-            const hasError = errorLines.has(i);
-            const isHighlighted = this.highlightedLine === i;
-            let cls = 'line-number';
-            if (hasError) cls += ' error';
-            if (isHighlighted) cls += ' debug-highlight';
-            html += `<div class="${cls}">${i}</div>`;
+        const count = this.textarea.value.split('\n').length;
+        // The gutter is given the width of its longest number (plus the rows'
+        // padding and its border) rather than sizing itself to its rows, so
+        // that nothing else changing in the editor, such as the status bar,
+        // makes the browser measure thousands of rows again.
+        const digits = String(count).length;
+        if (digits !== this.gutterDigits) {
+            this.gutterDigits = digits;
+            this.lineNumbers.style.width = `calc(${digits}ch + 1rem + 1px)`;
+        }
+        // One marker per line; an error outranks a warning.
+        const markers = new Map();
+        for (const problem of this.allErrors()) {
+            const existing = markers.get(problem.line);
+            if (!existing || (existing.type !== 'error' && problem.type === 'error')) {
+                markers.set(problem.line, problem);
+            }
         }
 
-        this.lineNumbers.innerHTML = html;
+        const rows = this.lineNumbers.children;
+        const built = this.gutter;
+        this.gutter = { count, markers, highlightedLine: this.highlightedLine };
+        if (!built || rows.length !== built.count) {
+            let html = '';
+            for (let i = 1; i <= count; i++) {
+                const problem = markers.get(i);
+                let cls = 'line-number';
+                if (problem) cls += problem.type === 'error' ? ' error' : ' warning';
+                if (this.highlightedLine === i) cls += ' debug-highlight';
+                const title = problem ? ` title="${this.escapeHtml(problem.message).replace(/"/g, '&quot;')}"` : '';
+                html += `<div class="${cls}"${title}>${i}</div>`;
+            }
+            this.lineNumbers.innerHTML = html;
+            this.applyLineActivity();
+            return;
+        }
+
+        let added = '';
+        for (let i = built.count + 1; i <= count; i++) added += `<div class="line-number">${i}</div>`;
+        if (added) this.lineNumbers.insertAdjacentHTML('beforeend', added);
+        while (rows.length > count) rows[rows.length - 1].remove();
+
+        const restyle = new Set([...built.markers.keys(), ...markers.keys(),
+            built.highlightedLine, this.highlightedLine]);
+        for (let line = built.count + 1; line <= count; line++) restyle.add(line);
+        for (const line of restyle) {
+            const row = rows[line - 1];
+            if (!row) continue;
+            const problem = markers.get(line);
+            row.classList.toggle('error', problem?.type === 'error');
+            row.classList.toggle('warning', !!problem && problem.type !== 'error');
+            row.classList.toggle('debug-highlight', this.highlightedLine === line);
+            if (problem) row.title = problem.message;
+            else row.removeAttribute('title');
+        }
+        if (count > built.count) this.applyLineActivity(built.count);
+    }
+
+    //
+    // Build errors first, then live validation results. The live checks
+    // usually find the errors a build reported, so each counts once.
+    //
+    allErrors() {
+        const seen = new Set();
+        return [...this.reportedErrors, ...this.errors].filter(problem => {
+            const key = `${problem.type}|${problem.line}|${problem.message}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
     }
 
     //
@@ -414,13 +536,15 @@ export class CodeEditor {
     // @private
     //
     validateCode() {
-        if (this.options.language !== 'basic' || !this.options.highlightErrors) {
+        if (!this.options.highlightErrors) {
             this.errors = [];
-            this.updateStatus();
-            return;
+        } else if (this.options.validator) {
+            this.errors = this.options.validator(this.textarea.value);
+        } else if (this.options.language === 'basic') {
+            this.errors = this.tokenizer.validate(this.textarea.value);
+        } else {
+            this.errors = [];
         }
-
-        this.errors = this.tokenizer.validate(this.textarea.value);
         this.updateLineNumbers();
         this.updateStatus();
     }
@@ -432,16 +556,19 @@ export class CodeEditor {
     updateStatus() {
         const lines = this.textarea.value.split('\n').length;
         const chars = this.textarea.value.length;
+        const problems = this.allErrors();
 
-        if (this.errors.length === 0) {
-            this.statusText.textContent = `${lines} line${lines !== 1 ? 's' : ''}, ${chars} characters`;
+        if (problems.length === 0) {
+            this.statusText.textContent = this.info
+                || `${lines} line${lines !== 1 ? 's' : ''}, ${chars} characters`;
             this.errorCount.textContent = '';
             this.errorCount.className = 'error-count';
         } else {
-            const errorCount = this.errors.filter(e => e.type === 'error').length;
-            const warnCount = this.errors.filter(e => e.type === 'warning').length;
+            const errorCount = problems.filter(e => e.type === 'error').length;
+            const warnCount = problems.filter(e => e.type === 'warning').length;
+            const first = problems.find(e => e.type === 'error') ?? problems[0];
 
-            this.statusText.textContent = this.errors[0].message;
+            this.statusText.textContent = first.line ? `Line ${first.line}: ${first.message}` : first.message;
 
             let countText = '';
             if (errorCount > 0) countText += `${errorCount} error${errorCount !== 1 ? 's' : ''}`;
@@ -470,15 +597,64 @@ export class CodeEditor {
     // @param {string} text - The text to set
     //
     setValue(text) {
+        // A textarea reports its value with \n line endings; keep the value
+        // given to listeners the same whether it was typed or set.
+        text = text.replace(/\r\n?/g, '\n');
         this.textarea.value = text;
         this.value = text;
+        this.reportedErrors = [];
+        this.info = '';
         this.updateHighlight();
         this.updateLineNumbers();
         this.validateCode();
+        this.notifyChange();
+    }
 
+    //
+    // Call listener(value) whenever the text changes, by typing or setValue().
+    // @returns {Function} Unsubscribe
+    //
+    onValueChange(listener) {
+        this.changeListeners.add(listener);
+        return () => this.changeListeners.delete(listener);
+    }
+
+    notifyChange() {
         if (this.options.onChange) {
             this.options.onChange(this.value);
         }
+        for (const listener of this.changeListeners) listener(this.value);
+    }
+
+    //
+    // Show errors found when building the program (assembling or tokenizing)
+    // in the gutter and status bar, and scroll to the first one. They stay
+    // until the text changes.
+    // @param {Array<{line: number, message: string, type?: string}>} errors
+    //
+    showErrors(errors) {
+        this.reportedErrors = errors.map(error => ({ type: 'error', ...error }));
+        this.updateLineNumbers();
+        this.updateStatus();
+        const first = this.reportedErrors.find(error => error.line);
+        if (first) this.scrollToLine(first.line);
+    }
+
+    //
+    // Show a note about the last build in the status bar until the text changes.
+    // @param {string} message
+    //
+    showInfo(message) {
+        this.info = message;
+        this.updateStatus();
+    }
+
+    //
+    // Add a control to the toolbar, beside the search box.
+    // @param {HTMLElement} element
+    //
+    addToolbarItem(element) {
+        this.container.querySelector('.toolbar-left').appendChild(element);
     }
 
     //
@@ -529,6 +705,7 @@ export class CodeEditor {
     setLanguage(lang) {
         this.options.language = lang;
         this.textarea.setAttribute('aria-label', lang === 'asm' ? 'Assembly code editor' : 'BASIC code editor');
+        this.overlayLines = null;
         this.updateHighlight();
         this.validateCode();
     }

@@ -5,7 +5,7 @@
 ; $D016 bits 0-2 = horizontal scroll (0-7 pixels)
 ; When scroll reaches 0, shift all characters left
 
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
 
     SEI             ; Disable interrupts
 

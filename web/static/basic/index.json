@@ -5,79 +5,233 @@
       "title": "Direct Mode Calculator",
       "category": "Getting Started",
       "file": "direct-mode-calc.bas",
-      "direct": true
+      "direct": true,
+      "description": "Type a sum without a line number and the C64 works it out at once.",
+      "concepts": [
+        "PRINT",
+        "Direct mode",
+        "Maths"
+      ]
     },
     {
       "id": "helloWorld",
       "title": "Hello World",
       "category": "Getting Started",
-      "file": "hello-world.bas"
+      "file": "hello-world.bas",
+      "description": "The traditional first program: one PRINT and the C64 says hello.",
+      "concepts": [
+        "PRINT",
+        "END"
+      ]
     },
     {
       "id": "countToTen",
       "title": "Count to 10",
       "category": "Getting Started",
-      "file": "count-to-ten.bas"
+      "file": "count-to-ten.bas",
+      "description": "A FOR...NEXT loop counts from 1 to 10, one number per line.",
+      "concepts": [
+        "FOR...NEXT",
+        "Variables"
+      ]
     },
     {
       "id": "diceRoller",
       "title": "Dice Roller",
       "category": "Getting Started",
-      "file": "dice-roller.bas"
+      "file": "dice-roller.bas",
+      "description": "Rolls a six-sided die with RND every time you press a key.",
+      "concepts": [
+        "RND",
+        "INT",
+        "GET"
+      ]
     },
     {
       "id": "inputName",
       "title": "Name Input",
       "category": "Getting Started",
-      "file": "input-name.bas"
+      "file": "input-name.bas",
+      "description": "Asks for your name with INPUT and greets you, again and again.",
+      "concepts": [
+        "INPUT",
+        "Strings",
+        "GOTO"
+      ]
     },
     {
       "id": "infiniteLoop",
       "title": "Infinite Loop",
       "category": "Getting Started",
-      "file": "infinite-loop.bas"
+      "file": "infinite-loop.bas",
+      "description": "Two lines that never stop. Press RUN/STOP (Esc) to break in.",
+      "concepts": [
+        "GOTO",
+        "RUN/STOP"
+      ]
     },
     {
       "id": "borderFlash",
       "title": "Border Flasher",
       "category": "Graphics",
-      "file": "border-flasher.bas"
+      "file": "border-flasher.bas",
+      "description": "Pokes the border colour register at 53280 as fast as BASIC can go, so the border flickers rapidly.",
+      "concepts": [
+        "POKE",
+        "VIC-II",
+        "Colours"
+      ]
     },
     {
       "id": "tenPrint",
       "title": "Maze One-liner",
       "category": "Graphics",
-      "file": "maze-oneliner.bas"
+      "file": "maze-oneliner.bas",
+      "description": "The famous one-liner: random diagonal characters build an endless maze.",
+      "concepts": [
+        "CHR$",
+        "RND",
+        "PETSCII"
+      ],
+      "demo": true
     },
     {
       "id": "balloon",
       "title": "Balloon Sprite",
       "category": "Graphics",
-      "file": "balloon-sprite.bas"
+      "file": "balloon-sprite.bas",
+      "description": "Builds a balloon sprite from DATA and floats it across the screen.",
+      "concepts": [
+        "Sprites",
+        "READ/DATA",
+        "VIC-II"
+      ],
+      "demo": true
+    },
+    {
+      "id": "bouncingBall",
+      "title": "Bouncing Ball",
+      "category": "Graphics",
+      "file": "bouncing-ball.bas",
+      "description": "A ball bounces off the edges, drawn straight into screen and colour memory.",
+      "concepts": [
+        "POKE",
+        "Screen memory",
+        "Colour RAM"
+      ],
+      "demo": true
+    },
+    {
+      "id": "sixteenColours",
+      "title": "The 16 Colours",
+      "category": "Graphics",
+      "file": "sixteen-colours.bas",
+      "description": "Every colour the C64 can show, with its number and its name.",
+      "concepts": [
+        "Colours",
+        "READ/DATA",
+        "Reverse text"
+      ],
+      "demo": true
+    },
+    {
+      "id": "starfield",
+      "title": "Twinkling Stars",
+      "category": "Graphics",
+      "file": "starfield.bas",
+      "description": "Stars twinkle in random colours, poked straight into screen memory.",
+      "concepts": [
+        "RND",
+        "POKE",
+        "Colour RAM"
+      ],
+      "demo": true
     },
     {
       "id": "simpleBeep",
       "title": "SID Beep",
       "category": "Sound",
-      "file": "sid-beep.bas"
+      "file": "sid-beep.bas",
+      "description": "One note on SID voice 1: set the volume, envelope and pitch, then open the gate.",
+      "concepts": [
+        "SID",
+        "POKE",
+        "Envelope"
+      ],
+      "sound": true
     },
     {
       "id": "ascendingScale",
       "title": "Ascending Scale",
       "category": "Sound",
-      "file": "ascending-scale.bas"
+      "file": "ascending-scale.bas",
+      "description": "A sawtooth wave climbs in pitch as the frequency register counts up.",
+      "concepts": [
+        "SID",
+        "FOR...NEXT",
+        "Frequency"
+      ],
+      "sound": true
+    },
+    {
+      "id": "odeToJoy",
+      "title": "Ode to Joy",
+      "category": "Sound",
+      "file": "ode-to-joy.bas",
+      "description": "Beethoven on the SID chip, played from frequencies in DATA lines.",
+      "concepts": [
+        "SID",
+        "READ/DATA",
+        "Music"
+      ],
+      "sound": true
+    },
+    {
+      "id": "guessNumber",
+      "title": "Guess the Number",
+      "category": "Games",
+      "file": "guess-the-number.bas",
+      "description": "Find the secret number between 1 and 100. Peek at N in the program view to cheat!",
+      "concepts": [
+        "INPUT",
+        "IF...THEN",
+        "RND"
+      ]
+    },
+    {
+      "id": "reactionTest",
+      "title": "Reaction Test",
+      "category": "Games",
+      "file": "reaction-test.bas",
+      "description": "Press a key when the border turns red, and the TI clock times you.",
+      "concepts": [
+        "GET",
+        "TI clock",
+        "Timing"
+      ]
     },
     {
       "id": "multiplicationTable",
       "title": "Times Tables",
       "category": "Math",
-      "file": "times-tables.bas"
+      "file": "times-tables.bas",
+      "description": "Pick a number and a FOR...NEXT loop prints its times table.",
+      "concepts": [
+        "INPUT",
+        "FOR...NEXT"
+      ]
     },
     {
       "id": "joystickTester",
       "title": "Joystick Tester",
       "category": "Input",
-      "file": "joystick-tester.bas"
+      "file": "joystick-tester.bas",
+      "description": "Reads both joystick ports from the CIA chip and lights up each direction.",
+      "concepts": [
+        "PEEK",
+        "CIA",
+        "Joystick"
+      ]
     }
   ]
 }

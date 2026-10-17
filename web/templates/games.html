@@ -1,0 +1,72 @@
+{% extends "asm.html" %}
+{#
+    The Assembly Lab, set up for games: its own library of complete games,
+    joystick 2 on the arrow keys, sound, and a fresh C64 for every run.
+    The game cards come from static/games/index.json, passed in by main.py.
+#}
+
+{% block title %}C64 Games in 6502 Assembly - Turbo8bit{% endblock %}
+{% block description %}Play five Commodore 64 games written in 6502 assembly in the style of 80s classics, then read the source, change it and play your own version.{% endblock %}
+
+{% block lab_options %} data-library="{{ url_for('static', filename='games/index.json') }}"
+    data-library-base="{{ url_for('static', filename='games/') }}"
+    data-default-sample="{{ games[0].id }}" data-draft-key="turbo8bit.games.draft"
+    data-joystick="2" data-reset-on-run data-sound-on-run{% endblock %}
+
+{% block screen_note %}
+            <p class="games-joystick-note">Joystick in port 2: the arrow keys, and <kbd>Space</kbd> to fire.
+                If the keys stop working, click the screen.</p>
+{% endblock %}
+
+{% block editor_title %}GAME SOURCE{% endblock %}
+{% block library_label %}Game:{% endblock %}
+
+{% block lab_guide %}
+<section class="games-guide" aria-labelledby="gamesHeading">
+    <h2 id="gamesHeading">Five Games, Every Line of Code</h2>
+    <p class="games-intro">Each game is one assembly file, written for this page in the style of an 80s
+        classic. Press <strong>Play</strong>, then read the source: the comments at the top of each file
+        explain how it works and what to change. Edit anything and press <strong>Run</strong> to play your
+        version.</p>
+
+    <div class="game-cards">
+        {% for game in games %}
+        <article class="game-card" data-sample="{{ game.id }}">
+            <h3>{{ game.title }}</h3>
+            <p class="game-style">In the style of {{ game.style }}</p>
+            <p>{{ game.summary }}</p>
+            <p class="game-controls"><strong>Controls:</strong> {{ game.controls }}</p>
+            <h4>How it works</h4>
+            <ul>
+                {% for point in game.highlights %}
+                <li>{{ point }}</li>
+                {% endfor %}
+            </ul>
+            <h4>Try changing</h4>
+            <ul>
+                {% for idea in game.tryThis %}
+                <li>{{ idea }}</li>
+                {% endfor %}
+            </ul>
+            <button type="button" class="game-play" onclick="runSample('{{ game.id }}')">▶ Play {{ game.title }}</button>
+        </article>
+        {% endfor %}
+    </div>
+
+    <div class="games-tips">
+        <h3>Changing a game</h3>
+        <ul>
+            <li>Settings such as lives, speeds and colours are constants near the top of each file:
+                change a number and press <strong>Run</strong>.</li>
+            <li>Every run starts on a freshly reset C64, so nothing is left over from the last one.</li>
+            <li><strong>Pause</strong> above the screen, then <strong>Step</strong> to follow the game one
+                instruction at a time. The memory viewer shows its variables change: try
+                <strong>Zero page</strong>.</li>
+            <li>Labels are not case-sensitive: SCORE and score are the same name. A branch reaches
+                127 bytes; to go further, branch over a <code class="asm-code">JMP</code>.</li>
+            <li>The <strong>File</strong> menu saves your version, as source or as a <code>.prg</code> that
+                runs in other C64 emulators: <code>LOAD"GAME",8,1</code> then <code>SYS 2064</code>.</li>
+        </ul>
+    </div>
+</section>
+{% endblock %}

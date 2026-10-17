@@ -643,13 +643,14 @@ export const C64_CHIPS = {
         textureOptions: { logo: 'MOS', partNumber: '901225', secondary: '-01' },
         chipOptions: { pinCount: 12, length: 1.2 }
     },
-    // Combined ROM (C64C short board - all ROMs in one chip)
+    // The BASIC + KERNAL ROM of the C64C short board. Character ROM stays
+    // a separate chip (CHAROM, 901225-01).
     ROM_COMBINED: {
         textureOptions: { logo: 'CSG', partNumber: '251913', secondary: '-01' },
         chipOptions: { pinCount: 14, length: 1.4 }
     },
 
-    // MMU (Memory Management - same as PLA on C64C)
+    // The C64C's "SuperPLA": the PLA and glue logic in one chip
     MMU: {
         textureOptions: { logo: 'CSG', partNumber: '252535', secondary: '-01' },
         chipOptions: { pinCount: 24, length: 1.8 }

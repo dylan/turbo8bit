@@ -25,7 +25,7 @@
             </div>
             <div class="panel-body">
                 <canvas id="simCanvas" width="800" height="600" tabindex="0"
-                        aria-label="C64 bus simulation. Shows the CPU, RAM, ROM and I/O chips exchanging addresses and data."></canvas>
+                        aria-label="C64 bus diagram. The CPU, VIC-II, SID, CIAs, PLA, ROM and RAM chips light up as real bus accesses are played back; the log beside it describes each one."></canvas>
                 <div class="bus-legend">
                     <span><span class="dot address-dot"></span> Address Bus (Request)</span>
                     <span><span class="dot data-dot"></span> Data Bus (Payload)</span>
@@ -41,23 +41,36 @@
                 <h2>SCENARIOS</h2>
             </div>
             <div class="panel-body">
-                <div class="log-panel" id="logPanel">
-                    <div class="log-entry">System Ready. Select a scenario below.</div>
+                <div class="log-panel" id="logPanel" aria-live="off">
+                    <div class="log-entry">Choose a scenario. Each one is recorded from the emulated C64 as it runs, then played back one bus access at a time.</div>
+                </div>
+
+                <div class="trace-controls" role="group" aria-label="Playback">
+                    <button type="button" id="tracePause" disabled>⏸ Pause</button>
+                    <button type="button" id="traceStep" disabled title="Show the next bus access">⏭ Step</button>
+                    <label>Speed
+                        <select id="traceSpeed">
+                            <option value="slow">Slow</option>
+                            <option value="normal" selected>Normal</option>
+                            <option value="fast">Fast</option>
+                        </select>
+                    </label>
                 </div>
                 
                 <div class="scenario-buttons">
-                    <button class="scenario-btn" onclick="runScenario('boot')">⚡ Power On / Boot (Kernal)</button>
-                    <button class="scenario-btn" onclick="runScenario('typing')">⌨️ Typing Character</button>
-                    <button class="scenario-btn" onclick="runScenario('vic')">📺 VIC-II Screen Refresh</button>
-                    <button class="scenario-btn" onclick="runScenario('sound')">🎵 SID Sound Event</button>
+                    <button class="scenario-btn" data-scenario="boot">⚡ Power On / Boot (KERNAL)</button>
+                    <button class="scenario-btn" data-scenario="typing">⌨️ Pressing a Key</button>
+                    <button class="scenario-btn" data-scenario="vic">📺 VIC-II Drawing a Row of Text</button>
+                    <button class="scenario-btn" data-scenario="sound">🎵 Starting a Note on the SID</button>
                 </div>
                 
                 <div class="info-section">
                     <h2>HOW IT WORKS</h2>
                     <div class="default-info">
-                        <p><strong>The Spine Metaphor:</strong> The central bus acts as the backbone, connecting all components.</p>
-                        <p><strong>Red Dots (Address Bus):</strong> Components asking "Where is the data?" or "Where should I put this?"</p>
-                        <p><strong>Yellow Dots (Data Bus):</strong> The actual information (numbers, letters, graphics) moving between components.</p>
+                        <p><strong>One bus, many chips:</strong> the CPU and the VIC-II share one 16-bit address bus and one 8-bit data bus. Every chip is wired to them, but only one answers each access.</p>
+                        <p><strong>Red dots (address bus):</strong> where the CPU or VIC-II wants to read or write.</p>
+                        <p><strong>Yellow dots (data bus):</strong> the byte that moves: from the chip on a read, to it on a write.</p>
+                        <p><strong>The PLA decides:</strong> it lights up on every access because it turns the address, and the banking bits, into the one chip select that makes ROM, RAM or a chip answer.</p>
                     </div>
                 </div>
             </div>
@@ -73,10 +86,13 @@
     <div class="motherboard-section">
         <p class="section-intro">The C64C motherboard with key chips labeled. The C64's architecture is elegantly simple yet powerful.</p>
         <div class="motherboard-image-container">
-            <img src="{{ url_for('static', filename='C64Cmotherboard.annotated.png') }}"
-                 alt="Annotated C64C Motherboard showing chip locations"
-                 class="motherboard-image"
-                 width="2048" height="730" loading="lazy" decoding="async">
+            <picture>
+                <source srcset="{{ url_for('static', filename='C64Cmotherboard.annotated.webp') }}" type="image/webp">
+                <img src="{{ url_for('static', filename='C64Cmotherboard.annotated.png') }}"
+                     alt="Annotated C64C Motherboard showing chip locations"
+                     class="motherboard-image"
+                     width="2048" height="730" loading="lazy" decoding="async">
+            </picture>
         </div>
     </div>
     
@@ -99,7 +115,7 @@
                 <h3>VIC-II</h3>
                 <p>Handles all graphics: sprites, characters, bitmaps. Can steal bus cycles from CPU.</p>
                 <ul>
-                    <li><span class="label">Part:</span> 6569 (PAL) / 6567 (NTSC)</li>
+                    <li><span class="label">Part:</span> 6569 / 8565 (PAL), 6567 / 8562 (NTSC)</li>
                     <li><span class="label">Resolution:</span> 320×200 / 160×200</li>
                     <li><span class="label">Colors:</span> 16</li>
                     <li><span class="label">Sprites:</span> 8 hardware</li>
@@ -144,25 +160,25 @@
             
             <div class="chip-card">
                 <div class="chip-3d-container" id="chip-mmu"></div>
-                <h3>MMU</h3>
-                <p>Memory Management Unit / PLA. The traffic controller deciding which chip responds to each address.</p>
+                <h3>PLA</h3>
+                <p>The Programmable Logic Array: the traffic controller that turns every address, plus the CPU's banking bits, into the chip select that makes ROM, RAM or one of the chips answer.</p>
                 <ul>
-                    <li><span class="label">Part:</span> 906114 / 252535</li>
+                    <li><span class="label">Part:</span> 906114-01 PLA / 252535-01 SuperPLA (C64C)</li>
                     <li><span class="label">Function:</span> Address decode</li>
                     <li><span class="label">Controls:</span> Bank switching</li>
-                    <li><span class="label">Note:</span> Runs hot, common failure</li>
+                    <li><span class="label">Note:</span> The original PLA runs hot and often fails</li>
                 </ul>
             </div>
             
             <div class="chip-card">
                 <div class="chip-3d-container" id="chip-rom"></div>
                 <h3>ROM</h3>
-                <p>Contains KERNAL OS, BASIC interpreter, and character sets. Combined in one chip on C64C.</p>
+                <p>The KERNAL operating system and the BASIC interpreter, in one 16 KB chip on the C64C. The character shapes live in a separate 4 KB character ROM.</p>
                 <ul>
-                    <li><span class="label">Part:</span> 251913-01 (C64C)</li>
+                    <li><span class="label">Part:</span> 251913-01 BASIC + KERNAL (C64C)</li>
                     <li><span class="label">KERNAL:</span> 8 KB ($E000-$FFFF)</li>
                     <li><span class="label">BASIC:</span> 8 KB ($A000-$BFFF)</li>
-                    <li><span class="label">CHAROM:</span> 4 KB ($D000-$DFFF)</li>
+                    <li><span class="label">Characters:</span> 901225-01, 4 KB ($D000-$DFFF when banked in)</li>
                 </ul>
             </div>
             
@@ -172,7 +188,7 @@
                     <div class="chip-3d-container chip-3d-small" id="chip-ram2"></div>
                 </div>
                 <h3>RAM</h3>
-                <p>Two 4464 chips providing 64KB of dynamic RAM, shared between CPU and VIC-II.</p>
+                <p>Two 4464 chips (64K &times; 4 bits each) make 64 KB together: each stores four of the eight bits of every byte. The CPU and VIC-II take turns using them.</p>
                 <ul>
                     <li><span class="label">Part:</span> 4464 × 2 (C64C)</li>
                     <li><span class="label">Size:</span> 64 KB total</li>
@@ -186,7 +202,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{{ url_for('static', filename='js/hardware.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/hardware.js') }}"></script>
 <script type="module">
     import { initChip3DScene, renderChipToImage, C64_CHIPS } from '/static/js/chip3d.js';
     
@@ -234,7 +250,8 @@
             'CIA_6526': C64_CHIPS.CIA_6526,
             'MMU': C64_CHIPS.MMU,           // Replaces PLA on Short Board
             'RAM_4464': C64_CHIPS.RAM_4464, // 4464 chips at U9/U10
-            'ROM_COMBINED': C64_CHIPS.ROM_COMBINED  // Super ROM 251913-01
+            'ROM_COMBINED': C64_CHIPS.ROM_COMBINED,  // BASIC + KERNAL 251913-01
+            'CHAROM': C64_CHIPS.CHAROM      // Character ROM 901225-01
         };
         
         // Render each chip to an image at high resolution for clarity

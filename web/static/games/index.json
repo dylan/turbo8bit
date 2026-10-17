@@ -1,0 +1,94 @@
+{
+  "examples": [
+    {
+      "id": "alien-armada",
+      "title": "Alien Armada",
+      "category": "Games",
+      "file": "alien-armada.asm",
+      "style": "Space Invaders, 1978",
+      "summary": "Hold back a marching armada before it lands. Hide behind the shields, and pick off the mystery ship for a bonus.",
+      "controls": "Left and right move your base. Fire shoots.",
+      "highlights": [
+        "The armada is made of characters, so it moves a whole character, 8 pixels, at a time.",
+        "A shot hits when the screen cell under its tip holds an alien character.",
+        "The score adds up in decimal, using the 6502's BCD mode (SED)."
+      ],
+      "tryThis": [
+        "More lives (up to 9): change START_LIVES.",
+        "Redraw the aliens: their pixels are under ALIEN CHARACTERS."
+      ]
+    },
+    {
+      "id": "rockfall",
+      "title": "Rockfall",
+      "category": "Games",
+      "file": "rockfall.asm",
+      "style": "Boulder Dash, 1984",
+      "summary": "Dig through four caves, grab enough gems to open the exit and get out before time runs out. Boulders fall, fireflies roam.",
+      "controls": "Move to dig. Hold fire and push a direction to grab without stepping.",
+      "highlights": [
+        "The screen is the map: the caves live in screen memory and nowhere else.",
+        "Every tile that moves has bit 7 set, so one BMI finds it and a jump table moves it.",
+        "The caves are drawn as plain text at the end of the file."
+      ],
+      "tryThis": [
+        "Design your own cave in CAVES.",
+        "Speed the game up: lower TICK_FRAMES (down to 2)."
+      ]
+    },
+    {
+      "id": "jumpin-jo",
+      "title": "Jumpin' Jo",
+      "category": "Games",
+      "file": "jumpin-jo.asm",
+      "style": "Super Mario Bros. and The Great Giana Sisters, 1985-87",
+      "summary": "Run and jump across two smoothly scrolling levels. Stomp the bugs, bash blocks for gems and reach the flag.",
+      "controls": "Left and right run. Up or fire jumps; hold it to jump higher.",
+      "highlights": [
+        "Smooth scrolling: $D016 slides the screen, and an unrolled loop shifts it every 8 pixels.",
+        "A raster split keeps the status line still above the scrolling level.",
+        "Speeds in 1/256ths of a pixel make the jumps rise and fall smoothly."
+      ],
+      "tryThis": [
+        "Build your own level in LEVELS.",
+        "Lower gravity: make GRAVITY smaller."
+      ]
+    },
+    {
+      "id": "nova-strike",
+      "title": "Nova Strike",
+      "category": "Games",
+      "file": "nova-strike.asm",
+      "style": "R-Type, 1987",
+      "summary": "Fly through an endless alien cave, blast waves of enemies and charge your beam for the guardian at the end of each stage.",
+      "controls": "Fly in any direction. Tap fire to shoot; hold it to charge the beam.",
+      "highlights": [
+        "The cave is never stored: each column is invented as it scrolls in.",
+        "Enemy waves are rows in a table: when, what, how many, where.",
+        "The beam and the guardian are sprites stretched with $D01D and $D017."
+      ],
+      "tryThis": [
+        "Design your own attack waves in WAVES.",
+        "A tighter cave: change MIN_GAP."
+      ]
+    },
+    {
+      "id": "dojo-duel",
+      "title": "Dojo Duel",
+      "category": "Games",
+      "file": "dojo-duel.asm",
+      "style": "International Karate, 1986",
+      "summary": "A karate contest at sunset. Block, duck and strike to score three points first, then face an opponent with a higher belt.",
+      "controls": "Fire punches. Fire with towards kicks, with up high-kicks, with down sweeps. Up blocks, down ducks.",
+      "highlights": [
+        "One raster interrupt runs 17 times a frame to paint the sunset a text row at a time.",
+        "The fighters facing left are made at the start by mirroring the sprites facing right.",
+        "Moves are rows in a table, and the opponent's skill comes from tables indexed by its belt."
+      ],
+      "tryThis": [
+        "Face a black belt from the start: set START_BELT to 6.",
+        "Paint a different sky in BAND_COLORS."
+      ]
+    }
+  ]
+}

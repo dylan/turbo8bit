@@ -5,7 +5,7 @@
 ; Blank lines indicated by $FF marker (no text data needed)
 ; End of all lines marked by $FE
 
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
 
 ; Zero-page pointer (required for indirect indexed addressing)
 LINEPTR = $FB       ; 2-byte pointer at $FB/$FC

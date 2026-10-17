@@ -1,0 +1,29 @@
+{#
+    The C64 screen with its view tools, shared by the BASIC and Assembly labs.
+    lab/screen-tools.js wires the buttons up by their data-screen-action.
+#}
+{% macro c64_screen() %}
+<div class="panel-header screen-header">
+    <h2>C64 SCREEN</h2>
+    <div class="screen-toolbar" id="screenToolbar" role="toolbar" aria-label="Screen tools">
+        <button type="button" data-screen-action="pause" aria-pressed="false"
+                title="Freeze the C64 without losing anything in memory">⏸ Pause</button>
+        <button type="button" data-screen-action="turbo" aria-pressed="false"
+                title="Run as fast as your computer allows">⚡ Turbo</button>
+        <button type="button" data-screen-action="crt" aria-pressed="false"
+                title="Show the picture like an old TV">📺 CRT</button>
+        <button type="button" data-screen-action="snapshot"
+                title="Save a picture of the screen">📷 Snapshot</button>
+        <button type="button" data-screen-action="fullscreen" aria-pressed="false"
+                title="Fill your screen with the C64 (Esc to leave)">⛶ Full screen</button>
+    </div>
+</div>
+<div class="screen-frame" id="screenFrame">
+    {# The stage is the 4:3 picture; the frame is what goes full screen. #}
+    <div class="screen-stage">
+        <canvas id="screen" width="384" height="272" tabindex="0"
+                aria-label="Commodore 64 screen. Focus it and type to use the C64 keyboard, or paste text with Ctrl+V."></canvas>
+    </div>
+</div>
+<div class="screen-inspector" id="screenInspector"></div>
+{% endmacro %}

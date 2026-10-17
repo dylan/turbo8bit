@@ -417,3 +417,113 @@ def test_cancelled_audio_start_cannot_close_a_newer_audio_graph(emulator_ui):
     assert ctx.eval("emulator.audioEnabled && emulator.machine.audioEnabled")
     assert ctx.eval("audioContexts[0].state") == "closed"
     assert ctx.eval("scheduledFrames.size") == 1
+
+
+def test_turbo_runs_many_frames_per_refresh_and_reports_them(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval(
+        """
+        var reported = [];
+        var states = [];
+        emulator.onFrame(count => reported.push(count));
+        emulator.onStateChange(e => states.push([e.paused, e.turbo]));
+        emulator.running = true;
+        emulator.lastTime = -25;
+        emulator.loop();
+        emulator.setTurbo(true);
+        emulator.loop();
+        emulator.pause();
+        emulator.loop();
+        emulator.resume();
+        """
+    )
+    # One 50Hz frame in 25ms, then a whole turbo budget, then nothing while paused.
+    assert ctx.eval("JSON.stringify(reported)") == "[1,40]"
+    assert ctx.eval("emulator.frame") == 41
+    assert ctx.eval("JSON.stringify(states)") == (
+        "[[false,true],[true,true],[false,true]]"
+    )
+
+
+def test_a_fast_reset_boots_at_turbo_speed_without_turning_turbo_on(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval(
+        """
+        var reported = [];
+        emulator.onFrame(count => reported.push(count));
+        emulator.running = true;
+        emulator.resetToBasic({ fast: true });
+        var turboChanges = [];
+        emulator.onStateChange(e => turboChanges.push(e.turbo));
+        emulator.loop();
+        emulator.basicReady = true;
+        emulator.lastTime = -25;
+        emulator.loop();
+        """
+    )
+    # A whole turbo budget while booting, then 50Hz once BASIC is ready.
+    assert ctx.eval("JSON.stringify(reported)") == "[40,1]"
+    assert ctx.eval("emulator.turbo") is False
+    assert ctx.eval("turboChanges.length") == 0
+    # Any other reset is an ordinary one.
+    ctx.eval("emulator.resetToBasic({ fast: true }); emulator.reset();")
+    assert ctx.eval("emulator.fastBoot") is False
+
+
+def test_a_failing_frame_listener_does_not_stop_the_loop(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval(
+        """
+        var calls = 0;
+        emulator.onFrame(() => { throw new Error('broken tool'); });
+        var stop = emulator.onFrame(() => calls++);
+        emulator.running = true;
+        emulator.lastTime = -25;
+        emulator.loop();
+        stop();
+        emulator.lastTime = -25;
+        emulator.loop();
+        """
+    )
+    assert ctx.eval("calls") == 1
+    assert ctx.eval("scheduledFrames.size") == 2
+
+
+def test_typing_waits_for_room_in_the_keyboard_buffer(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval(
+        """
+        emulator.machine.ram[0xC6] = 10;
+        emulator.typeText('AB');
+        function runOneTimer() {
+            const [id, callback] = scheduledTimers.entries().next().value;
+            scheduledTimers.delete(id);
+            callback();
+        }
+        runOneTimer();
+        runOneTimer();
+        """
+    )
+    assert ctx.eval("emulator.machine.typed.length") == 0
+    assert ctx.eval("emulator.typingQueue.length") == 2
+    ctx.eval("emulator.machine.ram[0xC6] = 0; runTimers();")
+    assert ctx.eval("String.fromCharCode(...emulator.machine.typed)") == "AB"
+
+
+def test_typed_text_uses_c64_character_codes(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("emulator.typeText('a\u03c0\\x93\u20ac\\n'); runTimers();")
+    assert ctx.eval("JSON.stringify(emulator.machine.typed)") == "[65,255,147,13]"
+
+
+def test_ctrl_v_is_left_to_the_browser_for_pasting(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval(
+        """
+        var paste = keyEvent('v', 'KeyV');
+        paste.ctrlKey = true;
+        emulator.handleKeyPress(paste);
+        """
+    )
+    assert not ctx.eval("paste.defaultPrevented")
+    assert ctx.eval("emulator.machine.keys.size") == 0

@@ -616,6 +616,8 @@ export class C64Machine {
 
     //
     // Read from VIC-II registers
+    // Unconnected bits read as 1, which is why PEEK(53280) is 254 after boot
+    // rather than 14: only the low nibble of a color register exists.
     //
     readVIC(addr, sideEffects = true) {
         // Calculate current raster line from global cycle counter
@@ -629,12 +631,16 @@ export class C64Machine {
             case 0x11:
                 // Screen control + raster MSB (bit 7 = raster bit 8)
                 return (this.io[reg] & 0x7F) | ((rasterLine & 0x100) >> 1);
+            case 0x16:
+                return this.io[reg] | 0xC0;
+            case 0x18:
+                return this.io[reg] | 0x01;
             case 0x19:
                 // Return VIC IRQ status (bit 7 set if any enabled IRQ is active)
-                return this.vic.irqStatus;
+                return this.vic.irqStatus | 0x70;
             case 0x1A:
                 // Interrupt enable register
-                return this.vic.irqEnable;
+                return this.vic.irqEnable | 0xF0;
             case 0x1E:
             case 0x1F: {
                 // Sprite-sprite / sprite-background collision latches clear on read
@@ -643,6 +649,8 @@ export class C64Machine {
                 return collisions;
             }
             default:
+                if (reg >= 0x2F) return 0xFF;
+                if (reg >= 0x20) return this.io[reg] | 0xF0;
                 return this.io[reg];
         }
     }
@@ -1334,6 +1342,29 @@ export class C64Machine {
         const loadAddress = data[0] | (data[1] << 8);
         this.loadCode(data.slice(2), loadAddress);
         return loadAddress;
+    }
+
+    //
+    // Load a PRG the way LOAD leaves memory. A program loaded at the start of
+    // BASIC text also moves the variable, array and string pointers past its
+    // end; without that, the first variable RUN creates overwrites the program.
+    //
+    // @param {Uint8Array|Array} data - The PRG file data including the 2-byte header
+    // @returns {{loadAddress: number, endAddress: number, basic: boolean}}
+    //   endAddress is the first byte after the program
+    //
+    loadProgram(data) {
+        const loadAddress = this.loadPrg(data);
+        const endAddress = loadAddress + data.length - 2;
+        const basicStart = this.ram[0x2b] | (this.ram[0x2c] << 8);
+        const basic = loadAddress === basicStart;
+        if (basic) {
+            for (const pointer of [0x2d, 0x2f, 0x31]) {
+                this.ram[pointer] = endAddress & 0xff;
+                this.ram[pointer + 1] = (endAddress >> 8) & 0xff;
+            }
+        }
+        return { loadAddress, endAddress, basic };
     }
 
     //

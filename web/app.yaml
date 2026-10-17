@@ -1,4 +1,4 @@
-runtime: python310
+runtime: python313
 entrypoint: gunicorn -b :$PORT main:app
 
 # Secrets live in web/secrets.yaml, which is git-ignored so they are never

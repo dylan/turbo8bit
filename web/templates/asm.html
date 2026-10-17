@@ -1,54 +1,90 @@
 {% extends "base.html" %}
+{% from "_c64_screen.html" import c64_screen %}
 
 {% block title %}6502 Assembly - Turbo8bit{% endblock %}
 {% block description %}Write and run 6502/6510 assembly code in the browser. Learn C64 machine programming with an interactive assembler, debugger, and live register view.{% endblock %}
 
 {% block content %}
-<div class="c64-page">
+{# games.html extends this page: it fills these blocks and sets lab_options #}
+<div class="c64-page" id="asmLab"{% block lab_options %}{% endblock %}>
     <!-- Emulator Panel -->
     <div class="c64-emulator-column">
         <div class="c64-emulator-panel">
-            <div class="panel-header">
-                <h2>C64 SCREEN</h2>
-            </div>
+            {{ c64_screen() }}
 
-            <canvas id="screen" width="384" height="272" tabindex="0"
-                    aria-label="Commodore 64 screen. Focus it and type to use the C64 keyboard."></canvas>
-            
             <div class="c64-controls asm-controls">
                 <button id="muteBtn" class="mute-btn muted" aria-pressed="false">🔇 MUTED</button>
-                <button class="reset-btn" onclick="resetEmulator()">RESET</button>
+                <button class="reset-btn" onclick="resetEmulator()" title="Switch the C64 off and on again">RESET</button>
             </div>
             <p id="emulator-status" class="c64-status" role="status"></p>
+            {% block screen_note %}{% endblock %}
             
-            <!-- Register display -->
+            <!-- The 6510's registers, refreshed every display frame -->
             <div class="register-display" id="registerDisplay">
-                <div class="register-row">
-                    <span class="reg-label">PC:</span><span id="regPC" class="reg-value">$0800</span>
-                    <span class="reg-label">A:</span><span id="regA" class="reg-value">$00</span>
-                    <span class="reg-label">X:</span><span id="regX" class="reg-value">$00</span>
-                    <span class="reg-label">Y:</span><span id="regY" class="reg-value">$00</span>
-                    <span class="reg-label">SP:</span><span id="regSP" class="reg-value">$FF</span>
+                <div class="cpu-registers">
+                    <div class="cpu-reg" title="Program Counter: the address of the next instruction">
+                        <span class="reg-label">PC</span><span id="regPC" class="reg-value">$0800</span>
+                    </div>
+                    <div class="cpu-reg" title="Accumulator: where arithmetic and logic happen">
+                        <span class="reg-label">A</span><span id="regA" class="reg-value">$00</span>
+                        <span id="regA-dec" class="reg-alt">0</span><span id="regA-bin" class="reg-bits">%00000000</span>
+                    </div>
+                    <div class="cpu-reg" title="X index register: counters and offsets">
+                        <span class="reg-label">X</span><span id="regX" class="reg-value">$00</span>
+                        <span id="regX-dec" class="reg-alt">0</span><span id="regX-bin" class="reg-bits">%00000000</span>
+                    </div>
+                    <div class="cpu-reg" title="Y index register: counters and offsets">
+                        <span class="reg-label">Y</span><span id="regY" class="reg-value">$00</span>
+                        <span id="regY-dec" class="reg-alt">0</span><span id="regY-bin" class="reg-bits">%00000000</span>
+                    </div>
+                    <div class="cpu-reg" title="Stack Pointer: the next free stack byte is $0100 + SP">
+                        <span class="reg-label">SP</span><span id="regSP" class="reg-value">$FF</span>
+                        <span id="regSP-depth" class="reg-alt"></span>
+                    </div>
                 </div>
                 <div class="register-row flags-row">
                     <span class="reg-label">Flags:</span>
-                    <span id="flagN" class="flag-bit" title="Negative">N</span>
-                    <span id="flagV" class="flag-bit" title="Overflow">V</span>
-                    <span class="flag-bit dim">-</span>
-                    <span id="flagB" class="flag-bit" title="Break">B</span>
-                    <span id="flagD" class="flag-bit" title="Decimal">D</span>
-                    <span id="flagI" class="flag-bit" title="Interrupt">I</span>
-                    <span id="flagZ" class="flag-bit" title="Zero">Z</span>
-                    <span id="flagC" class="flag-bit" title="Carry">C</span>
+                    <span id="flagN" class="flag-bit" title="N, Negative: bit 7 of the last result">N</span>
+                    <span id="flagV" class="flag-bit" title="V, Overflow: a signed result did not fit">V</span>
+                    <span class="flag-bit dim" title="Unused, always 1">-</span>
+                    <span id="flagB" class="flag-bit" title="B, Break: only seen in the copy of the flags that BRK pushes">B</span>
+                    <span id="flagD" class="flag-bit" title="D, Decimal: ADC and SBC work in BCD">D</span>
+                    <span id="flagI" class="flag-bit" title="I, Interrupt disable: IRQs wait while set">I</span>
+                    <span id="flagZ" class="flag-bit" title="Z, Zero: the last result was 0">Z</span>
+                    <span id="flagC" class="flag-bit" title="C, Carry: from additions, shifts and compares">C</span>
                 </div>
                 <div class="register-row source-row">
-                    <span class="reg-label">Instr:</span>
+                    <span class="reg-label">Next:</span>
                     <span id="sourceLine" class="source-line">-</span>
                 </div>
+                <div class="register-row cycles-row">
+                    <span class="reg-label">Cycles:</span>
+                    <span id="cycleCount" class="cycle-count" title="CPU cycles since the program started; about a million per second">0</span>
+                    <span id="lastStep" class="reg-alt"></span>
+                </div>
             </div>
-            
-            <div class="c64-info">
-                <p>Write assembly code, step through instructions, and watch the CPU registers change in real-time.</p>
+
+            <!-- Live memory, read with machine.peek() so it never disturbs the program -->
+            <div class="memory-viewer" id="memoryViewer">
+                <div class="memory-viewer-bar">
+                    <label class="memory-label">MEMORY
+                        <input class="memory-address" type="text" value="$C000" size="7" spellcheck="false"
+                               aria-label="Address to show: hex like $C000, decimal, or a label from your program">
+                    </label>
+                    <button type="button" data-step="-64" title="Previous 64 bytes" aria-label="Previous 64 bytes">◀</button>
+                    <button type="button" data-step="64" title="Next 64 bytes" aria-label="Next 64 bytes">▶</button>
+                    <button type="button" data-goto="program" title="Your assembled program">Program</button>
+                    <button type="button" data-goto="0" title="$0000-$00FF: fast zero-page variables">Zero page</button>
+                    <button type="button" data-goto="448" title="The top of the stack, $01C0-$01FF">Stack</button>
+                    <button type="button" data-goto="1024" title="Screen memory at $0400">Screen</button>
+                    <button type="button" data-goto="53248" title="VIC-II registers at $D000">VIC-II</button>
+                </div>
+                <div class="memory-dump"></div>
+                <p class="memory-legend">
+                    <span class="memory-byte pc">PC</span> next instruction
+                    <span class="memory-byte changed">00</span> just changed
+                    <span class="memory-byte stack">00</span> on the stack
+                </p>
             </div>
         </div>
     </div>
@@ -56,9 +92,9 @@
     <!-- Assembly Editor Panel -->
     <div class="c64-editor-panel">
         <div class="panel-header">
-            <h2>ASSEMBLY SOURCE</h2>
+            <h2>{% block editor_title %}ASSEMBLY SOURCE{% endblock %}</h2>
             <div class="sample-selector">
-                <label class="sample-label" for="sampleSelect">Sample:</label>
+                <label class="sample-label" for="sampleSelect">{% block library_label %}Sample:{% endblock %}</label>
                 <select id="sampleSelect" onchange="loadSelectedSample()"></select>
             </div>
         </div>
@@ -67,11 +103,25 @@
     </div>
 </div>
 
+{% block lab_guide %}
 <!-- Assembly Quick Start Guide -->
 <div class="asm-quickstart">
     <h2>6502 Assembly Quick Start</h2>
     
     <p>The 6502 is an 8-bit processor with three registers: <strong>A</strong> (accumulator), <strong>X</strong> and <strong>Y</strong> (index registers). Assembly instructions are 1-3 bytes.</p>
+
+    <ul class="intro-list">
+        <li><strong>Run</strong> assembles your program and runs it at full speed, as if BASIC had called it with
+            <code class="asm-code">SYS</code>. Its final <code class="asm-code"><span class="mnemonic">RTS</span></code> returns to the READY prompt.</li>
+        <li><strong>Step</strong> runs one instruction and shows what changed: registers, flags, cycles and the bytes
+            in the memory viewer. Calls into the ROM, such as <code class="asm-code"><span class="mnemonic">JSR</span> <span class="number">$FFD2</span></code>, run as one step.</li>
+        <li><strong>Pause</strong> a running program, then <strong>Step</strong> from wherever it was.
+            <strong>Stop</strong> resets the C64 but keeps your source.</li>
+        <li>Syntax: labels with or without a colon, <code class="asm-code"><span class="mnemonic">ORG</span> <span class="number">$C000</span></code> or
+            <code class="asm-code">*=<span class="number">$C000</span></code>, constants like <code class="asm-code">SCREEN = <span class="number">$0400</span></code>,
+            expressions like <code class="asm-code">SCREEN+<span class="number">40</span>*<span class="number">2</span></code> and <code class="asm-code"><span class="mnemonic">JMP</span> *</code>,
+            and data with <code class="asm-code">BYTE</code>, <code class="asm-code">WORD</code>, <code class="asm-code">TEXT <span class="string">"HI"</span></code>.</li>
+    </ul>
     
     <div class="quickstart-columns">
         <div class="quickstart-col">
@@ -176,6 +226,7 @@
     </div>
 </div>
 {% endblock %}
+{% endblock %}
 
 {% block extra_scripts %}
 <script type="module">
@@ -185,12 +236,27 @@ import { Assembler, disassembleInstruction } from "{{ url_for('static', filename
 import { C64Debugger, DebuggerState, isTopLevelRTS } from "{{ url_for('static', filename='js/emulator/debugger.js') }}";
 import { FLAG_N, FLAG_V, FLAG_B, FLAG_D, FLAG_I, FLAG_Z, FLAG_C } from "{{ url_for('static', filename='js/emulator/mos6510.js') }}";
 import { ExampleLibrary } from "{{ url_for('static', filename='js/examples.js') }}";
+import { attachScreenTools } from "{{ url_for('static', filename='js/lab/screen-tools.js') }}";
+import { attachProgramFiles } from "{{ url_for('static', filename='js/lab/program-files.js') }}";
+import { MemoryViewer } from "{{ url_for('static', filename='js/lab/memory-viewer.js') }}";
 
-const DEFAULT_EXAMPLE = 'hello';
+// The Games page is this lab with its own library and a few options, set as
+// data- attributes on #asmLab (see games.html):
+//   data-library, data-library-base, data-default-sample, data-draft-key
+//   data-joystick="2"  arrow keys and Space are that joystick port, and
+//                      running a program hands the keyboard to the screen
+//   data-reset-on-run  every run starts on a freshly booted C64
+//   data-sound-on-run  running turns the sound on, unless the visitor has
+//                      already chosen with the sound button
+const labOptions = document.getElementById('asmLab')?.dataset ?? {};
+const DEFAULT_EXAMPLE = labOptions.defaultSample ?? 'hello';
+const JOYSTICK_PORT = Number(labOptions.joystick ?? 0);
+const RESET_ON_RUN = 'resetOnRun' in labOptions;
+const SOUND_ON_RUN = 'soundOnRun' in labOptions;
 
 const examples = new ExampleLibrary(
-    "{{ url_for('static', filename='assembly/index.json') }}",
-    "{{ url_for('static', filename='assembly/') }}"
+    labOptions.library ?? "{{ url_for('static', filename='assembly/index.json') }}",
+    labOptions.libraryBase ?? "{{ url_for('static', filename='assembly/') }}"
 );
 
 // Initialize emulator
@@ -200,7 +266,23 @@ emulator.enableDragAndDrop();
 emulator.enableKeyboard();
 window.emulator = emulator;
 const emulatorStatus = document.getElementById('emulator-status');
-emulator.bindMuteButton(document.getElementById('muteBtn'), emulatorStatus);
+const muteButton = document.getElementById('muteBtn');
+emulator.bindMuteButton(muteButton, emulatorStatus);
+let soundChosen = false;
+muteButton.addEventListener('click', () => { soundChosen = true; });
+if (JOYSTICK_PORT) emulator.setActiveJoystick(JOYSTICK_PORT);
+
+// Called on the way from a click, as browsers only let sound start from one.
+function turnSoundOnForRun() {
+    if (SOUND_ON_RUN && !soundChosen && !emulator.audioEnabled) muteButton.click();
+}
+
+attachScreenTools(emulator, {
+    frame: document.getElementById('screenFrame'),
+    toolbar: document.getElementById('screenToolbar'),
+    inspector: document.getElementById('screenInspector'),
+    status: emulatorStatus
+});
 
 // Initialize assembler and debugger
 const assembler = new Assembler();
@@ -208,27 +290,59 @@ const debugger_ = new C64Debugger(emulator.machine);
 
 // Maps assembled addresses back to editor lines, for the debug highlight
 let currentSourceMap = null;
+// Labels of the last successful assembly, for the memory viewer
+let currentSymbols = {};
+let currentStart = 0xC000;
+
+// Live checking assembles on every edit; small programs take a millisecond.
+const liveCheck = source => new Assembler().assemble(source).errors
+    .map(error => ({ line: error.lineNum, message: error.message, type: 'error' }));
 
 // Initialize Assembly editor with integrated Run/Step/Stop buttons
 const editor = new CodeEditor('#asm-editor', {
     language: 'asm',
     fontSize: 13,
+    validator: liveCheck,
     onRun: () => assembleAndRun(),
     onStep: () => debuggerStep(),
     onStop: () => debuggerStop()
 });
 window.editor = editor;
 
+const memoryViewer = new MemoryViewer(document.getElementById('memoryViewer'), emulator.machine, {
+    resolve: name => currentSymbols[name],
+    programStart: () => currentStart
+});
+
 const sampleSelect = document.getElementById('sampleSelect');
 let currentExampleKey = null;
+let currentExampleSource = null;
+
+const programFiles = attachProgramFiles(editor, {
+    draftKey: labOptions.draftKey ?? 'turbo8bit.asm.draft',
+    extension: 'asm',
+    fileName: () => examples.get(currentExampleKey)?.file?.replace(/\.asm$/, '') ?? 'program',
+    // A .prg is the load address followed by the code: LOAD"NAME",8,1 then SYS.
+    buildPrg: () => {
+        const result = assembleEditor();
+        if (!result) return null;
+        return new Uint8Array([result.startAddress & 0xFF, result.startAddress >> 8, ...result.bytes]);
+    },
+    say: message => { emulatorStatus.textContent = message; },
+    isPristine: text => currentExampleKey !== null && text === currentExampleSource
+});
 
 async function initExamples() {
+    // Start fetching the index before restoring, so the sample list fills
+    // while a shared program or saved draft is put into the editor.
+    const restoring = programFiles.restore();
     try {
         await examples.populate(sampleSelect);
+        const restored = await restoring;
         if (editor.getValue()) {
             currentExampleKey = null;
             sampleSelect.value = '';
-            emulatorStatus.textContent = 'Samples are ready. Your code has been kept.';
+            emulatorStatus.textContent = restored ?? 'Samples are ready. Your code has been kept.';
             return;
         }
         sampleSelect.value = DEFAULT_EXAMPLE;
@@ -240,9 +354,28 @@ async function initExamples() {
 }
 initExamples();
 
+// Ask before a sample replaces code the visitor has written or changed.
+function mayReplaceEditor() {
+    const text = editor.getValue();
+    if (!text.trim() || (currentExampleKey !== null && text === currentExampleSource)) return true;
+    return confirm('Replace the code in the editor? ' +
+        'To keep your code, choose Cancel and save it from the File menu first.');
+}
+
+// Mark the elements that stand for the sample in the editor (the game cards).
+function showCurrentSample() {
+    for (const element of document.querySelectorAll('[data-sample]')) {
+        element.classList.toggle('current', element.dataset.sample === currentExampleKey);
+    }
+}
+
 // Load sample from dropdown
 async function loadSelectedSample() {
     const id = sampleSelect.value;
+    if (!mayReplaceEditor()) {
+        sampleSelect.value = currentExampleKey ?? '';
+        return;
+    }
     const previousSource = editor.getValue();
     try {
         const selection = await examples.select(id);
@@ -254,6 +387,8 @@ async function loadSelectedSample() {
         }
         currentExampleKey = id;
         editor.setValue(selection.source);
+        currentExampleSource = editor.getValue();
+        showCurrentSample();
         clearDebugState();
         currentSourceMap = null;
         emulatorStatus.textContent = '';
@@ -265,6 +400,19 @@ async function loadSelectedSample() {
 }
 window.loadSelectedSample = loadSelectedSample;
 
+// A Play button: load the sample unless it is already in the editor (edited
+// or not), then run it.
+async function runSample(id) {
+    turnSoundOnForRun();
+    if (currentExampleKey !== id) {
+        sampleSelect.value = id;
+        await loadSelectedSample();
+        if (currentExampleKey !== id) return;
+    }
+    return assembleAndRun();
+}
+window.runSample = runSample;
+
 // ============================================================================
 // Assembler and Debugger Controls
 // ============================================================================
@@ -273,6 +421,8 @@ window.loadSelectedSample = loadSelectedSample;
 let isDebugMode = false;
 let initialSP = 0;  // Stack pointer when we started stepping (to detect RTS completion)
 let executionRequest = 0;
+let cycleBase = 0;  // cpu.cycles when the program started
+let lastStepCycles = null;
 
 // Non-empty when execution ended abnormally; shown instead of the disassembly.
 let statusMessage = '';
@@ -280,45 +430,156 @@ let statusMessage = '';
 // BASIC warm start address - where we return after user code finishes
 const BASIC_WARM_START = 0xA474;
 
+// The program returns through a three-instruction trap in free RAM that BASIC
+// and the KERNAL leave alone: it counts the return, then continues to BASIC.
+// The count tells a full-speed run that the program has finished, which the
+// page could not otherwise see. $02A7-$02FF is also a favourite home for
+// small programs, so a program assembled over the traps goes without them.
+const RETURN_COUNTER = 0x02A7;
+const RETURN_TRAP = 0x02A8;
+const RETURN_TRAP_CODE = [
+    0xEE, RETURN_COUNTER & 0xFF, RETURN_COUNTER >> 8,     // INC RETURN_COUNTER
+    0x4C, BASIC_WARM_START & 0xFF, BASIC_WARM_START >> 8  // JMP BASIC_WARM_START
+];
+let returnCount = 0;
+
+// BRK goes through the vector at $0316 to the KERNAL's warm start at $FE66,
+// which restores that vector itself. Pointing it at a counting trap first
+// lets the page see a program that ends with BRK instead of RTS.
+const BRK_VECTOR = 0x0316;
+const KERNAL_BRK_HANDLER = 0xFE66;
+const BRK_COUNTER = 0x02AE;
+const BRK_TRAP = 0x02AF;
+const BRK_TRAP_CODE = [
+    0xEE, BRK_COUNTER & 0xFF, BRK_COUNTER >> 8,             // INC BRK_COUNTER
+    0x4C, KERNAL_BRK_HANDLER & 0xFF, KERNAL_BRK_HANDLER >> 8 // JMP $FE66
+];
+const BRK_MESSAGE = 'Your program stopped at a BRK instruction. The KERNAL warm-started BASIC, which clears the screen.';
+let brkCount = 0;
+
+const TRAPS_FIRST = RETURN_COUNTER;
+const TRAPS_LAST = BRK_TRAP + BRK_TRAP_CODE.length - 1;
+// Whether the current program runs with the traps, and so where its final
+// RTS goes.
+let trapsInstalled = false;
+let returnTarget = RETURN_TRAP;
+
+// Instructions that write to memory.
+const STORES = new Set(['STA', 'STX', 'STY', 'INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR']);
+
 //
-// Assemble the editor contents, reporting errors to the user.
+// True if the program could overwrite the traps: its bytes cover them, or an
+// absolute store, indexed or not, can reach them. Stores through a pointer
+// cannot be checked before the program runs.
+//
+function reachesTraps(result) {
+    const inTraps = (first, last) => last >= TRAPS_FIRST && first <= TRAPS_LAST;
+    let previousLine = null;
+    for (let i = 0; i < result.sourceMap.length; i++) {
+        const { address, lineNum } = result.sourceMap[i];
+        if (inTraps(address, address)) return true;
+        // Each source line emits one instruction, or data, from its first byte.
+        if (lineNum === previousLine) continue;
+        previousLine = lineNum;
+        const instruction = disassembleInstruction(result.bytes.subarray(i, i + 3), 0);
+        if (!STORES.has(instruction.mnemonic) || instruction.size !== 3) continue;
+        const target = instruction.bytes[1] | (instruction.bytes[2] << 8);
+        const reach = instruction.mode === 'absolute' ? 0 : 0xFF;
+        if (inTraps(target, target + reach)) return true;
+    }
+    return false;
+}
+
+const hexByte = value => value.toString(16).toUpperCase().padStart(2, '0');
+const hexWord = value => value.toString(16).toUpperCase().padStart(4, '0');
+
+//
+// Assemble the editor contents, reporting errors in the editor.
 // @returns {Object|null} The assembler result, or null if it did not assemble
 //
 function assembleEditor() {
     const result = assembler.assemble(editor.getValue());
     if (!result.success) {
-        alert('Assembly errors:\n' + result.errors.map(e => `Line ${e.lineNum}: ${e.message}`).join('\n'));
+        editor.showErrors(result.errors.map(e => ({ line: e.lineNum, message: e.message })));
+        const count = result.errors.length;
+        emulatorStatus.textContent = `Fix ${count === 1 ? 'the error' : `the ${count} errors`} ` +
+            'marked in the editor, then try again.';
         return null;
     }
     if (result.bytes.length === 0) {
-        alert('No machine code to run');
+        emulatorStatus.textContent = 'There is no code to run yet: write an instruction such as LDA #1.';
         return null;
     }
     currentSourceMap = result.sourceMap;
+    currentSymbols = result.symbols;
+    currentStart = result.startAddress;
+    const end = result.startAddress + result.bytes.length - 1;
+    editor.showInfo(`Assembled ${result.bytes.length} byte${result.bytes.length === 1 ? '' : 's'} ` +
+        `at $${hexWord(result.startAddress)}-$${hexWord(end)}. From BASIC, SYS ${result.startAddress} runs it.`);
     return result;
 }
 
 //
+// SYS starts a program with I and D clear (it loads them from $030F, which is
+// normally zero), but a frame can end inside the KERNAL's interrupt handler.
+// Let a handler in ROM finish first: entering from inside it would leave its
+// registers on the stack and start the program with interrupts disabled, so
+// the keyboard scan and clock would stop for the whole run.
+//
+function settleCpuForSys() {
+    const cpu = emulator.machine.cpu;
+    const inRom = pc => (pc >= 0xA000 && pc < 0xC000) || pc >= 0xE000;
+    for (let budget = 20000; (cpu.P & FLAG_I) && inRom(cpu.PC) && !cpu.halted && budget > 0; budget--) {
+        cpu.step();
+    }
+    cpu.P &= ~(FLAG_I | FLAG_D);
+}
+
+//
 // Load assembled code and set the CPU up as if BASIC had JSR'd into it, so a
-// final RTS hands control back to the READY prompt.
+// final RTS hands control back to the READY prompt (through the return trap
+// when the program leaves room for it).
 //
 function loadAndEnter(result) {
-    emulator.machine.loadCode(result.bytes, result.startAddress);
+    const machine = emulator.machine;
+    trapsInstalled = !reachesTraps(result);
+    if (trapsInstalled) {
+        machine.loadCode(RETURN_TRAP_CODE, RETURN_TRAP);
+        machine.loadCode(BRK_TRAP_CODE, BRK_TRAP);
+        machine.loadCode([BRK_TRAP & 0xFF, BRK_TRAP >> 8], BRK_VECTOR);
+    } else if ((machine.ram[BRK_VECTOR] | (machine.ram[BRK_VECTOR + 1] << 8)) === BRK_TRAP) {
+        // An earlier run's trap is about to be overwritten by this program.
+        machine.loadCode([KERNAL_BRK_HANDLER & 0xFF, KERNAL_BRK_HANDLER >> 8], BRK_VECTOR);
+    }
+    machine.loadCode(result.bytes, result.startAddress);
+    returnCount = machine.ram[RETURN_COUNTER];
+    brkCount = machine.ram[BRK_COUNTER];
+    returnTarget = trapsInstalled ? RETURN_TRAP : BASIC_WARM_START;
 
-    const cpu = emulator.machine.cpu;
-    const returnAddr = BASIC_WARM_START - 1;  // RTS pops and adds 1
+    const cpu = machine.cpu;
+    const returnAddr = returnTarget - 1;  // RTS pops and adds 1
     const push = (byte) => {
-        emulator.machine.ram[0x100 + cpu.SP] = byte;
+        machine.ram[0x100 + cpu.SP] = byte;
         cpu.SP = (cpu.SP - 1) & 0xff;
     };
     push((returnAddr >> 8) & 0xff);
     push(returnAddr & 0xff);
 
     cpu.PC = result.startAddress;
+    cycleBase = cpu.cycles;
+    lastStepCycles = null;
     statusMessage = '';
 }
 
 async function enterProgram(result, stepping) {
+    turnSoundOnForRun();
+    if (RESET_ON_RUN) {
+        // Games take over the machine (interrupt vectors, banking, chip
+        // registers), so each run gets a fresh C64. The reset clears the
+        // debug state, so it comes before this run takes its request.
+        emulator.resetToBasic({ fast: true }).catch(() => {});
+        currentSourceMap = result.sourceMap;
+    }
     const request = ++executionRequest;
     const generation = emulator.bootGeneration;
     try {
@@ -326,22 +587,31 @@ async function enterProgram(result, stepping) {
         await emulator.whenBasicReady();
         if (request !== executionRequest || generation !== emulator.bootGeneration) return;
 
+        // Settle first: finishing an interrupt handler moves the stack.
+        settleCpuForSys();
         initialSP = emulator.machine.cpu.SP;
         loadAndEnter(result);
+        // The code stays registered while it runs, so Pause then Step
+        // continues from wherever the program has got to. Without the traps
+        // the page cannot see a full-speed run end, so it does not track
+        // one: Step then starts the program afresh.
+        debugger_.codeStart = result.startAddress;
+        debugger_.codeEnd = result.startAddress + result.bytes.length;
+        debugger_.codeBytes = stepping || trapsInstalled ? result.bytes : null;
         isDebugMode = stepping;
         editor.clearHighlight();
         if (stepping) {
             emulator.pause();
-            debugger_.codeStart = result.startAddress;
-            debugger_.codeEnd = result.startAddress + result.bytes.length;
-            debugger_.codeBytes = result.bytes;
             debugger_.state = DebuggerState.PAUSED;
         } else {
-            debugger_.codeBytes = null;
+            debugger_.state = DebuggerState.RUNNING;
             emulator.resume();
+            // A program played with the joystick needs the keys at the screen.
+            if (JOYSTICK_PORT) emulator.canvas.focus({ preventScroll: true });
         }
         emulatorStatus.textContent = '';
         updateButtonHighlight(stepping ? 'step' : 'run');
+        memoryViewer.setAddress(result.startAddress);
     } catch (error) {
         if (request !== executionRequest || generation !== emulator.bootGeneration) return;
         console.error('Could not start assembly program:', error);
@@ -371,8 +641,15 @@ function stepAndCheckReturn() {
         return true;
     }
     if (isTopLevelRTS(opcode, spBefore, cpu.SP, (initialSP - 2) & 0xff)
-        && cpu.PC === BASIC_WARM_START) {
+        && cpu.PC === returnTarget) {
         clearDebugState();
+        emulatorStatus.textContent = 'Your program returned to BASIC with RTS.';
+        emulator.resume();
+        return true;
+    }
+    if (trapsInstalled && cpu.PC === BRK_TRAP) {
+        clearDebugState();
+        emulatorStatus.textContent = BRK_MESSAGE;
         emulator.resume();
         return true;
     }
@@ -388,19 +665,24 @@ function debuggerStep() {
         return;
     }
 
-    if (!debugger_.codeBytes) {
+    // Step carries on from where a paused program is; otherwise, including
+    // while a program runs at full speed, it starts the program afresh.
+    if (!debugger_.codeBytes || !isDebugMode) {
         const result = assembleEditor();
         if (!result) return;
 
         return enterProgram(result, true);
     }
 
-    isDebugMode = true;
+    debugger_.state = DebuggerState.PAUSED;
     emulator.pause();
-    const isJsr = emulator.machine.peek(cpu.PC) === 0x20;
+    const cyclesBefore = cpu.cycles;
+    const opcode = emulator.machine.peek(cpu.PC);
+    const isJsr = opcode === 0x20;
     const target = emulator.machine.peek(cpu.PC + 1) | (emulator.machine.peek(cpu.PC + 2) << 8);
-    const stepsInto = !isJsr
-        || (target >= debugger_.codeStart && target < debugger_.codeEnd);
+    // BRK, like a JSR into the ROMs, runs KERNAL code: go through it at once.
+    const stepsInto = opcode !== 0x00 && (!isJsr
+        || (target >= debugger_.codeStart && target < debugger_.codeEnd));
 
     if (stepsInto) {
         if (stepAndCheckReturn()) return;
@@ -419,7 +701,9 @@ function debuggerStep() {
         }
     }
 
+    lastStepCycles = cpu.cycles - cyclesBefore;
     updateButtonHighlight('step');
+    memoryViewer.refresh();
 }
 window.debuggerStep = debuggerStep;
 
@@ -431,6 +715,7 @@ function clearDebugState() {
     initialSP = 0;
     statusMessage = '';
     shownLine = undefined;
+    lastStepCycles = null;
 
     editor.clearHighlight();
     updateButtonHighlight(null);
@@ -440,6 +725,24 @@ emulator.onReset = () => {
     clearDebugState();
     currentSourceMap = null;
 };
+
+// The screen toolbar can pause and resume too. Pausing a running program
+// turns it into stepping; resuming a stepped one lets it run on.
+emulator.onStateChange(() => {
+    if (!debugger_.codeBytes) return;
+    if (emulator.paused && !isDebugMode) {
+        isDebugMode = true;
+        debugger_.state = DebuggerState.PAUSED;
+        updateButtonHighlight('step');
+        memoryViewer.refresh();
+    } else if (!emulator.paused && isDebugMode) {
+        isDebugMode = false;
+        debugger_.state = DebuggerState.RUNNING;
+        editor.clearHighlight();
+        shownLine = undefined;
+        updateButtonHighlight('run');
+    }
+});
 
 async function debuggerStop() {
     emulatorStatus.textContent = 'Returning to BASIC...';
@@ -463,12 +766,18 @@ window.resetEmulator = debuggerStop;
 // Debugger UI Updates
 // ============================================================================
 
+const registerElements = name => ({
+    hex: document.getElementById(`reg${name}`),
+    dec: document.getElementById(`reg${name}-dec`),
+    bin: document.getElementById(`reg${name}-bin`)
+});
 const regEls = {
     PC: document.getElementById('regPC'),
-    A: document.getElementById('regA'),
-    X: document.getElementById('regX'),
-    Y: document.getElementById('regY'),
-    SP: document.getElementById('regSP')
+    A: registerElements('A'),
+    X: registerElements('X'),
+    Y: registerElements('Y'),
+    SP: document.getElementById('regSP'),
+    depth: document.getElementById('regSP-depth')
 };
 
 const flagEls = [
@@ -482,10 +791,13 @@ const flagEls = [
 ];
 
 const sourceLineEl = document.getElementById('sourceLine');
+const cycleCountEl = document.getElementById('cycleCount');
+const lastStepEl = document.getElementById('lastStep');
 
 // Editor line currently marked as "executing", so the highlight (which also
 // scrolls) is only reapplied when it actually moves.
 let shownLine;
+let framesSinceMemoryRefresh = 0;
 
 const hex = (value, digits) => '$' + value.toString(16).toUpperCase().padStart(digits, '0');
 
@@ -515,6 +827,12 @@ function getSourceLineForPC(pc) {
     return entry ? entry.lineNum : null;
 }
 
+function showRegister(elements, value) {
+    elements.hex.textContent = hex(value, 2);
+    if (elements.dec) elements.dec.textContent = String(value);
+    if (elements.bin) elements.bin.textContent = '%' + value.toString(2).padStart(8, '0');
+}
+
 //
 // Mirror the live CPU into the register panel, the disassembly line and (while
 // stepping) the editor's highlighted line. This is the single place the
@@ -523,11 +841,27 @@ function getSourceLineForPC(pc) {
 function renderCpuState() {
     const cpu = emulator.machine.cpu;
 
+    // A full-speed run cannot be watched instruction by instruction, but the
+    // traps count each time the program comes back to BASIC.
+    if (debugger_.codeBytes && !isDebugMode && trapsInstalled) {
+        if (emulator.machine.ram[RETURN_COUNTER] !== returnCount) {
+            clearDebugState();
+            emulatorStatus.textContent = 'Your program returned to BASIC with RTS.';
+        } else if (emulator.machine.ram[BRK_COUNTER] !== brkCount) {
+            clearDebugState();
+            emulatorStatus.textContent = BRK_MESSAGE;
+        }
+    }
+
     regEls.PC.textContent = hex(cpu.PC, 4);
-    regEls.A.textContent = hex(cpu.A, 2);
-    regEls.X.textContent = hex(cpu.X, 2);
-    regEls.Y.textContent = hex(cpu.Y, 2);
+    showRegister(regEls.A, cpu.A);
+    showRegister(regEls.X, cpu.X);
+    showRegister(regEls.Y, cpu.Y);
     regEls.SP.textContent = hex(cpu.SP, 2);
+    if (regEls.depth) {
+        const used = 0xFF - cpu.SP;
+        regEls.depth.textContent = `${used} byte${used === 1 ? '' : 's'} used`;
+    }
 
     for (const [el, mask] of flagEls) {
         el.classList.toggle('set', !!(cpu.P & mask));
@@ -537,6 +871,12 @@ function renderCpuState() {
     const bytes = instr.bytes.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
     sourceLineEl.textContent = statusMessage
         || `${hex(cpu.PC, 4)}: ${bytes.padEnd(9)} ${instr.text}`;
+
+    if (debugger_.codeBytes) {
+        cycleCountEl.textContent = (cpu.cycles - cycleBase).toLocaleString();
+        lastStepEl.textContent = lastStepCycles === null ? ''
+            : `last step: ${lastStepCycles} cycle${lastStepCycles === 1 ? '' : 's'}`;
+    }
 
     // Only follow the PC in the editor while stepping; doing it during a
     // full-speed run would scroll the source out from under the user.
@@ -561,6 +901,12 @@ function renderCpuState() {
 //
 function debugLoop() {
     renderCpuState();
+    // While the program runs, refresh memory a few times a second; when
+    // stepping, each step refreshes it so the change highlight means "this step".
+    if (!emulator.paused && ++framesSinceMemoryRefresh >= 6) {
+        framesSinceMemoryRefresh = 0;
+        memoryViewer.refresh();
+    }
     requestAnimationFrame(debugLoop);
 }
 
@@ -572,6 +918,7 @@ window.addEventListener('load', () => {
     emulator.canvas.focus({ preventScroll: true });
 
     updateButtonHighlight(null);
+    memoryViewer.refresh();
     debugLoop();
 });
 </script>

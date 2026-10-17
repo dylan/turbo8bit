@@ -1,5 +1,7 @@
 """Smoke tests for the public site and its shared navigation/SEO contract."""
 
+import json
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
@@ -15,7 +17,7 @@ def client(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/asm", "/hardware", "/memmap", "/sid", "/about"]
+    "path", ["/", "/asm", "/games", "/hardware", "/memmap", "/sid", "/about"]
 )
 def test_public_pages_render_with_shared_navigation(client, path):
     response = client.get(path)
@@ -71,3 +73,23 @@ def test_logout_clears_session(client):
     assert response.headers["Location"] == "/"
     with client.session_transaction() as session:
         assert "user_email" not in session
+
+
+GAMES_INDEX = Path(main.app.static_folder) / "games" / "index.json"
+
+
+def test_games_page_is_the_assembly_lab_set_up_for_games(client):
+    text = client.get("/games").get_data(as_text=True)
+    assert 'data-library="/static/games/index.json"' in text
+    assert 'data-joystick="2"' in text
+    assert "data-reset-on-run" in text
+    games = json.loads(GAMES_INDEX.read_text(encoding="utf-8"))["examples"]
+    for game in games:
+        assert f'data-sample="{game["id"]}"' in text
+        assert f"runSample('{game['id']}')" in text
+
+
+def test_assembly_page_keeps_its_own_samples(client):
+    text = client.get("/asm").get_data(as_text=True)
+    assert '<div class="c64-page" id="asmLab">' in text
+    assert "game-card" not in text

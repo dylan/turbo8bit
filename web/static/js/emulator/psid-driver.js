@@ -114,8 +114,9 @@ export function generatePsidDriver(tune, song) {
     }
     const addresses = driverAddresses(tune);
 
-    // Determine timing: bit in speed field indicates CIA (1) or VIC (0)
-    const useCIA = (tune.speed >>> song) & 1;
+    // Determine timing: bit in speed field indicates CIA (1) or VIC (0).
+    // Songs past the 32nd all share bit 31.
+    const useCIA = (tune.speed >>> Math.min(song, 31)) & 1;
     const isNTSC = tune.clock === CLOCK_NTSC;
 
     // CIA-timed PSIDs default to 60Hz on either video standard.

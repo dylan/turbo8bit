@@ -1,7 +1,7 @@
 ; Memory Poking - Change Border Color
 ; The C64 border color is at $D020
 ; Values 0-15 are the C64 color palette
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
     
     LDA #$02        ; Red color (2)
     STA $D020       ; Store to border color register

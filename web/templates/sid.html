@@ -26,86 +26,54 @@
             </div>
             <div class="panel-body sid-monitor-body">
                 <!-- Voice Visualization -->
-                <div class="voice-visualizer">
-                    <div class="voice-panel" id="voice-0">
+                <div class="voice-visualizer" id="voice-visualizer">
+                    {% for v in range(3) %}
+                    <div class="voice-panel" id="voice-{{ v }}">
                         <div class="voice-header">
-                            <span class="voice-label">VOICE 1</span>
-                            <span class="voice-waveform" id="wave-0">OFF</span>
+                            <span class="voice-label">VOICE {{ v + 1 }}</span>
+                            <span class="voice-waveform" id="wave-{{ v }}">OFF</span>
                         </div>
+                        <!-- One cycle of the selected waveform, as tall as the envelope -->
+                        <canvas class="voice-shape" id="shape-{{ v }}" width="160" height="36" aria-hidden="true"></canvas>
                         <div class="voice-meters">
                             <div class="meter-row">
                                 <span class="meter-label">FREQ</span>
-                                <div class="meter-bar"><div class="meter-fill freq-fill" id="freq-0"></div></div>
-                                <span class="meter-value" id="freq-val-0">0</span>
+                                <div class="meter-bar"><div class="meter-fill freq-fill" id="freq-{{ v }}"></div></div>
+                                <span class="meter-value" id="freq-val-{{ v }}">0</span>
                             </div>
                             <div class="meter-row">
                                 <span class="meter-label">ENV</span>
-                                <div class="meter-bar"><div class="meter-fill env-fill" id="env-0"></div></div>
-                                <span class="meter-value" id="env-val-0">0</span>
+                                <div class="meter-bar"><div class="meter-fill env-fill" id="env-{{ v }}"></div></div>
+                                <span class="meter-value" id="env-val-{{ v }}">0</span>
                             </div>
                             <div class="adsr-display">
-                                <span class="adsr-label">A:<span id="attack-0">0</span></span>
-                                <span class="adsr-label">D:<span id="decay-0">0</span></span>
-                                <span class="adsr-label">S:<span id="sustain-0">0</span></span>
-                                <span class="adsr-label">R:<span id="release-0">0</span></span>
+                                <span class="adsr-label">A:<span id="attack-{{ v }}">0</span></span>
+                                <span class="adsr-label">D:<span id="decay-{{ v }}">0</span></span>
+                                <span class="adsr-label">S:<span id="sustain-{{ v }}">0</span></span>
+                                <span class="adsr-label">R:<span id="release-{{ v }}">0</span></span>
                             </div>
                         </div>
-                        <div class="gate-indicator" id="gate-0">GATE</div>
+                        <div class="voice-footer">
+                            <span class="gate-indicator" id="gate-{{ v }}">GATE</span>
+                            <span class="voice-note" id="note-{{ v }}" title="The note this voice is set to play">&mdash;</span>
+                            <span class="voice-mix">
+                                <button type="button" class="voice-mute" data-voice="{{ v }}" aria-pressed="false"
+                                        title="Silence voice {{ v + 1 }}">MUTE</button>
+                                <button type="button" class="voice-solo" data-voice="{{ v }}" aria-pressed="false"
+                                        title="Hear voice {{ v + 1 }} on its own">SOLO</button>
+                            </span>
+                        </div>
                     </div>
-                    
-                    <div class="voice-panel" id="voice-1">
-                        <div class="voice-header">
-                            <span class="voice-label">VOICE 2</span>
-                            <span class="voice-waveform" id="wave-1">OFF</span>
-                        </div>
-                        <div class="voice-meters">
-                            <div class="meter-row">
-                                <span class="meter-label">FREQ</span>
-                                <div class="meter-bar"><div class="meter-fill freq-fill" id="freq-1"></div></div>
-                                <span class="meter-value" id="freq-val-1">0</span>
-                            </div>
-                            <div class="meter-row">
-                                <span class="meter-label">ENV</span>
-                                <div class="meter-bar"><div class="meter-fill env-fill" id="env-1"></div></div>
-                                <span class="meter-value" id="env-val-1">0</span>
-                            </div>
-                            <div class="adsr-display">
-                                <span class="adsr-label">A:<span id="attack-1">0</span></span>
-                                <span class="adsr-label">D:<span id="decay-1">0</span></span>
-                                <span class="adsr-label">S:<span id="sustain-1">0</span></span>
-                                <span class="adsr-label">R:<span id="release-1">0</span></span>
-                            </div>
-                        </div>
-                        <div class="gate-indicator" id="gate-1">GATE</div>
-                    </div>
-                    
-                    <div class="voice-panel" id="voice-2">
-                        <div class="voice-header">
-                            <span class="voice-label">VOICE 3</span>
-                            <span class="voice-waveform" id="wave-2">OFF</span>
-                        </div>
-                        <div class="voice-meters">
-                            <div class="meter-row">
-                                <span class="meter-label">FREQ</span>
-                                <div class="meter-bar"><div class="meter-fill freq-fill" id="freq-2"></div></div>
-                                <span class="meter-value" id="freq-val-2">0</span>
-                            </div>
-                            <div class="meter-row">
-                                <span class="meter-label">ENV</span>
-                                <div class="meter-bar"><div class="meter-fill env-fill" id="env-2"></div></div>
-                                <span class="meter-value" id="env-val-2">0</span>
-                            </div>
-                            <div class="adsr-display">
-                                <span class="adsr-label">A:<span id="attack-2">0</span></span>
-                                <span class="adsr-label">D:<span id="decay-2">0</span></span>
-                                <span class="adsr-label">S:<span id="sustain-2">0</span></span>
-                                <span class="adsr-label">R:<span id="release-2">0</span></span>
-                            </div>
-                        </div>
-                        <div class="gate-indicator" id="gate-2">GATE</div>
-                    </div>
+                    {% endfor %}
                 </div>
-                
+
+                <!-- Output oscilloscope, fed by the player's AnalyserNode -->
+                <div class="sid-scope">
+                    <div class="filter-header">OUTPUT</div>
+                    <canvas id="sid-scope" width="640" height="90"
+                            aria-label="Oscilloscope showing the sound wave the SID is producing"></canvas>
+                </div>
+
                 <!-- Filter Display -->
                 <div class="filter-display">
                     <div class="filter-header">FILTER</div>
@@ -179,6 +147,14 @@
                         <button class="sid-btn" data-url="/static/sid/Great_Giana_Sisters.sid">Giana Sisters</button>
                         <button class="sid-btn" data-url="/static/sid/Cybernoid.sid">Cybernoid</button>
                     </div>
+                </div>
+
+                <!-- Visitors' own tunes, read in the browser and never uploaded -->
+                <div class="sid-upload" id="sid-upload">
+                    <button type="button" class="sid-upload-btn" id="sid-file-btn">📂 Play your own .sid</button>
+                    <input type="file" id="sid-file" accept=".sid" hidden>
+                    <span class="sid-upload-hint">or drop one here. Over 50,000 tunes are free in the
+                        <a href="https://www.hvsc.c64.org/" target="_blank" rel="noopener">High Voltage SID Collection</a>.</span>
                 </div>
                 
                 <!-- Song Info -->
@@ -274,6 +250,132 @@
 
     const PLAY_LABEL = '\u25b6 PLAY';
     const STOP_LABEL = '\u25a0 STOP';
+
+    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+    //
+    // The musical note nearest a frequency register value. The oscillator
+    // adds the register to a 24-bit accumulator every cycle, so it completes
+    // reg * clock / 2^24 cycles per second.
+    //
+    function noteFor(freqRegister, clock) {
+        if (!freqRegister) return null;
+        const hertz = freqRegister * clock / 16777216;
+        const midi = Math.round(12 * Math.log2(hertz / 440) + 69);
+        if (midi < 0) return null;
+        return { name: NOTE_NAMES[midi % 12] + (Math.floor(midi / 12) - 1), hertz };
+    }
+
+    function canvasContext(id) {
+        const canvas = document.getElementById(id);
+        return canvas && canvas.getContext ? canvas.getContext('2d') : null;
+    }
+
+    //
+    // Sketch two cycles of a voice's waveform, as tall as its envelope, so
+    // pulse width and the ADSR are visible as shapes rather than numbers.
+    //
+    function drawVoiceShape(index, voice) {
+        const context = canvasContext(`shape-${index}`);
+        if (!context) return;
+        const { width, height } = context.canvas;
+        context.clearRect(0, 0, width, height);
+        context.strokeStyle = voice.gate ? '#9ad284' : '#6c6c6c';
+        context.lineWidth = 2;
+        context.beginPath();
+        const amplitude = (voice.envelope / 255) * (height / 2 - 3);
+        const mid = height / 2;
+        const duty = voice.pulseWidth / 4096;
+        for (let x = 0; x <= width; x++) {
+            const phase = (x / width * 2) % 1;
+            let level = 0;
+            if (voice.waveform.includes('NOI')) {
+                level = Math.sin(x * 12.9898) * 43758.5453 % 1;
+            } else if (voice.waveform.includes('PUL')) {
+                level = phase < duty ? 1 : -1;
+            } else if (voice.waveform.includes('SAW')) {
+                level = phase * 2 - 1;
+            } else if (voice.waveform.includes('TRI')) {
+                level = phase < 0.5 ? phase * 4 - 1 : 3 - phase * 4;
+            }
+            const y = mid - level * amplitude;
+            if (x === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+        }
+        context.stroke();
+    }
+
+    const scopeSamples = new Float32Array(2048);
+
+    //
+    // Draw the SID's output, triggered on a rising zero crossing so that
+    // a steady note stands still on the screen.
+    //
+    function drawScope() {
+        const context = canvasContext('sid-scope');
+        if (!context) return;
+        const { width, height } = context.canvas;
+        context.clearRect(0, 0, width, height);
+        context.strokeStyle = '#444444';
+        context.beginPath();
+        context.moveTo(0, height / 2);
+        context.lineTo(width, height / 2);
+        context.stroke();
+
+        const analyser = player && player.getAnalyser ? player.getAnalyser() : null;
+        if (!analyser || !isPlaying) return;
+        analyser.getFloatTimeDomainData(scopeSamples);
+        let start = 0;
+        for (let i = 1; i < scopeSamples.length / 2; i++) {
+            if (scopeSamples[i - 1] < 0 && scopeSamples[i] >= 0) {
+                start = i;
+                break;
+            }
+        }
+        const visible = Math.min(1024, scopeSamples.length - start);
+        context.strokeStyle = '#70a4b2';
+        context.lineWidth = 2;
+        context.beginPath();
+        for (let x = 0; x < width; x++) {
+            const sample = scopeSamples[start + Math.floor(x / width * visible)];
+            const y = height / 2 - sample * (height / 2 - 4) * 2.5;
+            if (x === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+        }
+        context.stroke();
+    }
+
+    // Mute and solo are listening aids: the voices keep running in the SID.
+    const mix = { muted: [false, false, false], solo: null };
+
+    function applyMix() {
+        for (let v = 0; v < 3; v++) {
+            const silent = mix.solo !== null ? v !== mix.solo : mix.muted[v];
+            if (player && player.setVoiceMuted) player.setVoiceMuted(v, silent);
+            const panel = document.getElementById(`voice-${v}`);
+            if (panel) panel.classList.toggle('silenced', silent);
+        }
+        const visualizer = document.getElementById('voice-visualizer');
+        if (!visualizer || !visualizer.querySelectorAll) return;
+        visualizer.querySelectorAll('.voice-mute').forEach(button => {
+            button.setAttribute('aria-pressed', String(mix.muted[Number(button.dataset.voice)]));
+        });
+        visualizer.querySelectorAll('.voice-solo').forEach(button => {
+            button.setAttribute('aria-pressed', String(mix.solo === Number(button.dataset.voice)));
+        });
+    }
+
+    function onMixClick(event) {
+        const button = event.target.closest && event.target.closest('.voice-mute, .voice-solo');
+        if (!button) return;
+        const voice = Number(button.dataset.voice);
+        if (button.classList.contains('voice-solo')) {
+            mix.solo = mix.solo === voice ? null : voice;
+        } else {
+            mix.muted[voice] = !mix.muted[voice];
+        }
+        applyMix();
+    }
 
     // Reflect playback state on the single play/stop button.
     function setPlayButton(playing) {
@@ -382,6 +484,13 @@
             const freqValEl = document.getElementById(`freq-val-${v}`);
             if (freqEl) freqEl.style.width = `${freqPct}%`;
             if (freqValEl) freqValEl.textContent = voice.freq;
+
+            const noteEl = document.getElementById(`note-${v}`);
+            if (noteEl) {
+                const note = noteFor(voice.freq, state.clockFrequency || 985248);
+                noteEl.textContent = note ? note.name : '\u2014';
+                noteEl.title = note ? `${note.hertz.toFixed(1)} Hz` : 'Silent: frequency 0';
+            }
             
             // Envelope (0-255)
             const envPct = (voice.envelope / 255) * 100;
@@ -409,8 +518,10 @@
                     gateEl.classList.remove('active');
                 }
             }
+            drawVoiceShape(v, voice);
         }
         }
+        drawScope();
         
         // Update filter
         const filter = state.filter;
@@ -520,8 +631,8 @@
         }
     }
     
-    // Load a SID file by URL
-    async function loadSong(url) {
+    // Load a SID file by URL, or from the bytes of a file the visitor chose
+    async function loadSong(url, buffer = null) {
         if (isLoading || isStarting) return false;
         isLoading = true;
         hasTune = false;
@@ -533,7 +644,11 @@
         }
         
         try {
-            await player.load(url);
+            if (buffer) {
+                player.loadData(buffer);
+            } else {
+                await player.load(url);
+            }
             hasTune = true;
             
             // Reset frame counter display
@@ -652,6 +767,19 @@
         const state = player.getState();
         await selectTrack(state.currentSong, true);
     }
+
+    // Play a .sid the visitor chose or dropped. It is read here in the
+    // browser; nothing is uploaded.
+    async function playFile(file) {
+        if (!file || !player || isLoading || isStarting) return;
+        if (!file.name.toLowerCase().endsWith('.sid')) {
+            playerStatus.textContent = `${file.name} is not a .sid file.`;
+            return;
+        }
+        document.querySelectorAll('.sid-btn').forEach(b => b.classList.remove('active'));
+        const loaded = await loadSong(null, await file.arrayBuffer());
+        if (loaded && !isPlaying) await togglePlay();
+    }
     
     // Initialize when player module is ready
     function onPlayerReady() {
@@ -663,6 +791,28 @@
         
         // Set up SID button clicks
         document.querySelector('.sid-selector-horizontal').addEventListener('click', onSidButtonClick);
+
+        document.getElementById('voice-visualizer').addEventListener('click', onMixClick);
+
+        const fileInput = document.getElementById('sid-file');
+        // A hidden input cannot take focus, so a real button opens it.
+        document.getElementById('sid-file-btn').addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files && fileInput.files[0];
+            fileInput.value = '';
+            playFile(file);
+        });
+        const dropZone = document.getElementById('sid-upload');
+        dropZone.addEventListener('dragover', event => {
+            event.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', event => {
+            event.preventDefault();
+            dropZone.classList.remove('drag-over');
+            playFile(event.dataTransfer.files[0]);
+        });
     }
     
     document.addEventListener('DOMContentLoaded', onPlayerReady);

@@ -49,6 +49,17 @@ const AUDIO_MAX_LEAD = 4096;
 const BASIC_BOOT_FRAME_LIMIT = 1000;
 const BASIC_READY_CODES = [18, 5, 1, 4, 25, 46];
 
+// PAL frames per second: 985248 cycles / (63 cycles x 312 lines).
+const PAL_FRAME_RATE = 50.125;
+
+// Turbo runs whole frames for most of each display refresh, capped so a slow
+// device still gets to paint and handle input.
+const TURBO_BUDGET_MS = 12;
+const TURBO_MAX_FRAMES = 40;
+
+// The KERNAL keyboard buffer at $0277 holds this many keys ($C6 counts them).
+const KEYBOARD_BUFFER_SIZE = 10;
+
 // ============================================================================
 // KEYBOARD MATRIX MAPPING
 // ============================================================================
@@ -121,6 +132,23 @@ const SHIFTED_KEY_MATRIX = {
 const SHIFT_KEY = [1, 7];
 
 //
+// The PETSCII code a typed character produces in the C64's default mode, or
+// null for characters it has no key for. Letters type as unshifted (upper
+// case); codes 128-255 pass through so expanded {CLR}-style codes work.
+//
+function petsciiForTyping(ch) {
+    if (ch >= 'a' && ch <= 'z') return ch.charCodeAt(0) - 32;
+    switch (ch) {
+        case '£': return 0x5C;
+        case '↑': return 0x5E;
+        case '←': return 0x5F;
+        case 'π': return 0xFF;
+    }
+    const code = ch.charCodeAt(0);
+    return code <= 0xFF ? code : null;
+}
+
+//
 // Resolve a KeyboardEvent.key into a matrix position and its SHIFT requirement.
 // @returns {{row: number, col: number, shift: 'on'|'off'|'auto'}|null}
 //
@@ -171,6 +199,8 @@ export class C64Emulator {
         this.frame = 0;
         this.running = false;
         this.paused = false;  // For debug stepping mode
+        this.turbo = false;   // Run as fast as the host allows
+        this.fastBoot = false; // Run at turbo speed until BASIC is ready
         this.lastTime = 0;
         this.timeAccumulator = 0;
         this.animationId = null;
@@ -182,6 +212,11 @@ export class C64Emulator {
         this.bootError = null;
         this.bootWaiters = [];
         this.onReset = options.onReset || null;
+
+        // Page tools observe emulated frames and pause/turbo changes here
+        // rather than running their own timers.
+        this.frameListeners = new Set();
+        this.stateListeners = new Set();
 
         // Joystick emulation state
         // When activeJoystick is 1 or 2, arrow keys control that joystick
@@ -220,6 +255,7 @@ export class C64Emulator {
     }
 
     reset({ keepCartridge = false } = {}) {
+        this.fastBoot = false;
         this.cancelTyping();
         this.releaseAllKeys();
         this.beginBasicBoot(keepCartridge
@@ -236,8 +272,14 @@ export class C64Emulator {
         this.onReset?.();
     }
 
-    resetToBasic() {
+    //
+    // Reset and wait for BASIC READY. With fast, the boot runs at turbo speed
+    // (about a tenth of a second) without touching the user's turbo setting;
+    // a page that starts every program on a fresh machine needs that.
+    //
+    resetToBasic({ fast = false } = {}) {
         this.reset();
+        this.fastBoot = fast;
         if (!this.running) this.start();
         return this.whenBasicReady();
     }
@@ -454,6 +496,7 @@ export class C64Emulator {
     //
     pause() {
         this.paused = true;
+        this.notifyStateChange();
     }
 
     //
@@ -461,6 +504,7 @@ export class C64Emulator {
     //
     resume() {
         this.paused = false;
+        this.notifyStateChange();
     }
 
     //
@@ -468,6 +512,37 @@ export class C64Emulator {
     //
     isPaused() {
         return this.paused;
+    }
+
+    //
+    // Run frames as fast as the host allows instead of at 50Hz.
+    //
+    setTurbo(enabled) {
+        this.turbo = !!enabled;
+        this.timeAccumulator = 0;
+        this.notifyStateChange();
+    }
+
+    //
+    // Call listener(framesRun) after each display update that ran frames.
+    // @returns {Function} Unsubscribe
+    //
+    onFrame(listener) {
+        this.frameListeners.add(listener);
+        return () => this.frameListeners.delete(listener);
+    }
+
+    //
+    // Call listener(emulator) when pause or turbo changes.
+    // @returns {Function} Unsubscribe
+    //
+    onStateChange(listener) {
+        this.stateListeners.add(listener);
+        return () => this.stateListeners.delete(listener);
+    }
+
+    notifyStateChange() {
+        for (const listener of this.stateListeners) listener(this);
     }
 
     //
@@ -541,34 +616,41 @@ export class C64Emulator {
             return;
         }
 
-        this.timeAccumulator += dt;
-
-        // PAL C64 is 50.125 Hz approx
-        const frameTime = 1000 / 50.125;
         let framesRun = 0;
+        if (this.turbo || (this.fastBoot && !this.basicReady && !this.bootError)) {
+            const deadline = now + TURBO_BUDGET_MS;
+            do {
+                this.runOneFrame();
+                framesRun++;
+            } while (framesRun < TURBO_MAX_FRAMES && performance.now() < deadline);
+            this.timeAccumulator = 0;
+        } else {
+            this.timeAccumulator += dt;
+            const frameTime = 1000 / PAL_FRAME_RATE;
 
-        while (this.timeAccumulator >= frameTime) {
-            if (this.audioEnabled && this.audioProcessor) {
-                this.machine.runFrame(this.frameSamples);
-                this.pushFrameAudio();
-            } else {
-                this.machine.runFrame();
-            }
-            this.timeAccumulator -= frameTime;
-            this.frame++;
-            framesRun++;
-            this.checkBasicReady();
+            while (this.timeAccumulator >= frameTime) {
+                this.runOneFrame();
+                this.timeAccumulator -= frameTime;
+                framesRun++;
 
-            // Don't run too many frames in one go to keep UI responsive
-            if (framesRun > 5) {
-                this.timeAccumulator = 0;
-                break;
+                // Don't run too many frames in one go to keep UI responsive
+                if (framesRun > 5) {
+                    this.timeAccumulator = 0;
+                    break;
+                }
             }
         }
 
         // Render if we updated the state
         if (framesRun > 0) {
             this.render();
+            for (const listener of this.frameListeners) {
+                try {
+                    listener(framesRun);
+                } catch (error) {
+                    console.error('Frame listener failed:', error);
+                }
+            }
         }
 
         // Every deferred key has now been held through a full frame, so the
@@ -586,6 +668,22 @@ export class C64Emulator {
         }
 
         this.animationId = requestAnimationFrame(() => this.loop());
+    }
+
+    //
+    // Run one emulated frame, feeding its SID output to Web Audio when sound
+    // is on. Nothing else may clock the SID (see machine.runFrame).
+    // @private
+    //
+    runOneFrame() {
+        if (this.audioEnabled && this.audioProcessor) {
+            this.machine.runFrame(this.frameSamples);
+            this.pushFrameAudio();
+        } else {
+            this.machine.runFrame();
+        }
+        this.frame++;
+        this.checkBasicReady();
     }
 
     render() {
@@ -606,6 +704,8 @@ export class C64Emulator {
         if (e.target !== this.canvas && e.target?.closest(
             'input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"])'
         )) return;
+        // Ctrl+V stays a browser paste, which the page types into the C64.
+        if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) return;
 
         // event.key can change between keydown and keyup when Shift is released.
         const keyId = e.code || e.key;
@@ -788,14 +888,21 @@ export class C64Emulator {
     typeText(t, { lineDelay = 70 } = {}) {
         for (const ch of t) {
             if (ch === '\r') continue;  // CR/LF pairs are handled by the LF
-            const code = ch === '\n' ? 13 : ch.toUpperCase().charCodeAt(0);
+            const code = ch === '\n' ? 13 : petsciiForTyping(ch);
+            if (code === null) continue;
             this.typingQueue.push({ code, delay: ch === '\n' ? lineDelay : 30 });
         }
         if (this.typingTimer !== null || this.typingQueue.length === 0) return;
         const typeNext = () => {
             this.typingTimer = null;
+            if (this.typingQueue.length === 0) return;
+            // A busy C64 (storing a long line, running a command) stops
+            // emptying the buffer; wait for room rather than drop keys.
+            if (this.machine.ram[0xC6] >= KEYBOARD_BUFFER_SIZE) {
+                this.typingTimer = setTimeout(typeNext, 20);
+                return;
+            }
             const next = this.typingQueue.shift();
-            if (!next) return;
             this.machine.addKey(next.code);
             this.typingTimer = setTimeout(typeNext, next.delay);
         };
@@ -882,13 +989,17 @@ export class C64Emulator {
                 const arrayBuffer = await file.arrayBuffer();
                 const data = new Uint8Array(arrayBuffer);
 
-                // Handle different file types
+                let message = `Loaded ${file.name}.`;
                 if (name.endsWith('.prg')) {
-                    await this.loadPrgFile(data, file.name);
+                    const program = await this.loadPrgFile(data, file.name);
+                    message = program.basic
+                        ? `Loaded ${file.name} and typed RUN.`
+                        : `Loaded ${file.name} at $${program.loadAddress.toString(16).toUpperCase()}. ` +
+                          `Type SYS ${program.loadAddress} to start it.`;
                 } else {
                     this.loadCrtFile(data, file.name);
                 }
-                if (this.statusElement) this.statusElement.textContent = `Loaded ${file.name}.`;
+                if (this.statusElement) this.statusElement.textContent = message;
             } catch (err) {
                 console.error('Failed to load file:', err);
                 if (this.statusElement) this.statusElement.textContent = `Could not load file: ${err.message}`;
@@ -899,8 +1010,12 @@ export class C64Emulator {
     //
     // Load a PRG file into memory
     //
+    // A BASIC program (loaded at the start of BASIC text) is RUN, as an
+    // autostarting emulator would; machine code is left for the user to SYS.
+    //
     // @param {Uint8Array} data - The PRG file data (with 2-byte load address header)
     // @param {string} [filename] - Optional filename for logging
+    // @returns {Promise<{loadAddress: number, endAddress: number, basic: boolean}>}
     //
     async loadPrgFile(data, filename = 'program.prg') {
         if (data.length < 3) {
@@ -910,11 +1025,16 @@ export class C64Emulator {
         await this.whenBasicReady();
         if (generation !== this.bootGeneration) throw new Error('Program loading was interrupted by reset.');
 
-        // Load the PRG into memory
-        const loadAddress = this.machine.loadPrg(data);
-        const endAddress = loadAddress + data.length - 2 - 1;
+        const program = this.machine.loadProgram(data);
+        const hex = value => '$' + value.toString(16).padStart(4, '0');
+        console.log(`Loaded ${filename}: ${hex(program.loadAddress)}-${hex(program.endAddress - 1)} (${data.length - 2} bytes)`);
 
-        console.log(`Loaded ${filename}: $${loadAddress.toString(16).padStart(4, '0')}-$${endAddress.toString(16).padStart(4, '0')} (${data.length - 2} bytes)`);
+        if (program.basic) {
+            // "RUN" and RETURN fit the 10-key KERNAL buffer, so no timed typing is needed.
+            this.cancelTyping();
+            for (const ch of 'RUN\r') this.machine.addKey(ch.charCodeAt(0));
+        }
+        return program;
     }
 
     //

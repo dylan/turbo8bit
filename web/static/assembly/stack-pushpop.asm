@@ -1,7 +1,7 @@
 ; Stack Operations
 ; PHA pushes A to stack, PLA pops it
 ; Stack grows downward from $01FF
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
     
     LDA #$AA        ; A = $AA
     PHA             ; Push A (SP decreases)

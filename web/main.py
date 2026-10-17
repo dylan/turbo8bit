@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date
 from typing import NamedTuple
@@ -94,6 +95,7 @@ def inject_canonical():
         "CANONICAL_ORIGIN": CANONICAL_ORIGIN,
         "canonical_url_for": canonical_url_for,
         "canonical_static_url": canonical_static_url,
+        "CURRENT_YEAR": date.today().year,
     }
 
 
@@ -205,6 +207,13 @@ SITE_PAGES = [
         "0.9",
     ),
     Page(
+        "games",
+        "Games",
+        "Play C64 games written in 6502 assembly, then change their code",
+        "monthly",
+        "0.9",
+    ),
+    Page(
         "hardware",
         "Hardware",
         "Watch the chips talk over the address and data buses",
@@ -245,6 +254,15 @@ def index():
 def asm():
     """Render the 6502 Assembly Lab page."""
     return render_template("asm.html")
+
+
+@app.route("/games")
+def games():
+    """Render the games page: the Assembly Lab with complete games to play."""
+    index = os.path.join(app.static_folder, "games", "index.json")
+    with open(index, encoding="utf-8") as f:
+        game_list = json.load(f)["examples"]
+    return render_template("games.html", games=game_list)
 
 
 @app.route("/hardware")

@@ -1,7 +1,7 @@
 ; Print String Loop
 ; Uses indexed addressing to loop through a string
 ; and print each character
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
     
     LDX #$00        ; String index
 LOOP:

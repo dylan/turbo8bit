@@ -65,6 +65,13 @@ export class ExampleLibrary {
     }
 
     //
+    // @returns {Array<Object>} Every example, in index order
+    //
+    all() {
+        return [...this.byId.values()];
+    }
+
+    //
     // @returns {Promise<string>} The example's source text
     //
     async source(id) {

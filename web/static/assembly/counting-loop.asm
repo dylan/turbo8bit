@@ -1,7 +1,7 @@
 ; Counting Loop
 ; Watch X increment from 0 to 255, then wrap to 0
 ; The Zero flag (Z) becomes set when X = 0
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
     
     LDX #$00        ; Start X at 0
 LOOP:

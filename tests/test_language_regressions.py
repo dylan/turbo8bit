@@ -335,7 +335,7 @@ def test_vertical_scroll_returns_keyboard_and_irq_to_basic(machine_context):
             const code = new Assembler().assemble({json.dumps(source)});
             if (!code.success) return {{errors: code.errors}};
             machine.ram.set(code.bytes, code.startAddress);
-            languageTestType(machine, 'SYS2048\r');
+            languageTestType(machine, `SYS${{code.startAddress}}\r`);
             let frames = 0;
             while (frames < 1000 && machine.ram[code.symbols.DONE] !== 1) {{
                 machine.runFrame();
@@ -374,9 +374,10 @@ def editor_context(language_context):
     language_context.eval(
         """
         var editorTestElements = {};
+        var getComputedStyle = () => ({ lineHeight: '20px' });
         function editorTestElement() {
             return {
-                value: '', style: {}, handlers: {}, attributes: {},
+                value: '', style: {}, handlers: {}, attributes: {}, children: [],
                 selectionStart: 0, selectionEnd: 0,
                 classList: {add() {}, remove() {}},
                 addEventListener(name, callback) { this.handlers[name] = callback; },
@@ -478,6 +479,32 @@ def test_editor_controls_have_accessible_names(editor_context, language, label):
         )
 
 
+# The editor redraws only the lines between the unchanged start and end, so
+# typing in a game thousands of lines long stays quick.
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        ("a b c", "a b c", (3, 3, 3)),
+        ("a b c", "a X c", (1, 2, 2)),
+        ("a b c", "a b X Y c", (2, 2, 4)),
+        ("a b c", "a c", (1, 2, 1)),
+        ("a b c", "X a b c", (0, 0, 1)),
+        ("a b c", "a b c X", (3, 3, 4)),
+        ("a b b c", "a b c", (2, 3, 2)),
+        ("a", "", (0, 1, 1)),
+    ],
+)
+def test_editor_finds_the_lines_an_edit_changed(
+    language_context, before, after, expected
+):
+    first, end_old, end_new = expected
+    result = eval_json(
+        language_context,
+        f"changedLines({json.dumps(before.split(' '))}, {json.dumps(after.split(' '))})",
+    )
+    assert result == {"first": first, "endOld": end_old, "endNew": end_new}
+
+
 def test_editor_language_change_updates_accessible_name(editor_context):
     label = editor_context.eval(
         """(() => {
@@ -487,3 +514,109 @@ def test_editor_language_change_updates_accessible_name(editor_context):
         })()"""
     )
     assert label == "Assembly code editor"
+
+
+def test_editor_set_value_reports_line_endings_as_the_textarea_does(editor_context):
+    result = eval_json(
+        editor_context,
+        """(() => {
+            const editor = editorTestCreate('basic');
+            const heard = [];
+            editor.onValueChange(value => heard.push(value));
+            editor.setValue('10 PRINT 1\\r\\n20 END\\r\\n');
+            return { heard, textarea: editor.textarea.value };
+        })()""",
+    )
+    assert result["heard"] == ["10 PRINT 1\n20 END\n"]
+    assert result["textarea"] == "10 PRINT 1\n20 END\n"
+
+
+@pytest.mark.parametrize(
+    ("language", "source"), [("basic", "PRINT 1"), ("asm", "LDAA #1")]
+)
+def test_build_errors_found_by_the_live_check_count_once(
+    editor_context, language, source
+):
+    result = eval_json(
+        editor_context,
+        f"""(() => {{
+            const editor = editorTestCreate({json.dumps(language)});
+            if ({json.dumps(language)} === 'asm') {{
+                editor.options.validator = text => new Assembler().assemble(text).errors
+                    .map(error => ({{ line: error.lineNum, message: error.message, type: 'error' }}));
+            }}
+            editor.setValue({json.dumps(source)});
+            const live = editor.errorCount.textContent;
+            const built = {json.dumps(language)} === 'asm'
+                ? new Assembler().assemble(editor.getValue()).errors
+                    .map(error => ({{ line: error.lineNum, message: error.message }}))
+                : editor.tokenize().errors.filter(error => error.type === 'error');
+            editor.showErrors(built);
+            return {{ live, after: editor.errorCount.textContent }};
+        }})()""",
+    )
+    assert result["live"] == "1 error"
+    assert result["after"] == "1 error"
+
+
+@pytest.mark.parametrize(
+    ("source", "start", "expected"),
+    [
+        # A semicolon inside quotes is text, not the start of a comment.
+        ('ORG $C000\nTEXT "A;B" ; comment', 0xC000, [0x41, 0x3B, 0x42]),
+        # Operand spacing is preserved, and lower case is stored as typed on a C64.
+        ('ORG $C000\n.text "hi  x"', 0xC000, [0x48, 0x49, 0x20, 0x20, 0x58]),
+        ("*=$C000\nRTS", 0xC000, [0x60]),
+        ("* = $C000\nJMP *", 0xC000, [0x4C, 0x00, 0xC0]),
+        ("SCREEN = $0400\n*=$C000\nLDA SCREEN+40*2", 0xC000, [0xAD, 0x50, 0x04]),
+        (
+            "SCREEN = $0400\n*=$C000\nLDA #>SCREEN\nLDX #<(SCREEN+$1FF)",
+            0xC000,
+            [0xA9, 0x04, 0xA2, 0xFF],
+        ),
+        ("*=$C000\nLDA #-1\nLDY #'*'", 0xC000, [0xA9, 0xFF, 0xA0, 0x2A]),
+        ("*=$C000\nLDA #';'\nRTS", 0xC000, [0xA9, 0x3B, 0x60]),
+        (
+            '*=$C000\n.asciiz "HI"\n!byte 1,$02\n!word $1234',
+            0xC000,
+            [0x48, 0x49, 0x00, 0x01, 0x02, 0x34, 0x12],
+        ),
+        # Classic layout: labels start in column one, colon optional.
+        ("*=$C000\nLOOP\n    INX\n    BNE LOOP", 0xC000, [0xE8, 0xD0, 0xFD]),
+        ("*=$C000\nLOOP INX\n BNE LOOP", 0xC000, [0xE8, 0xD0, 0xFD]),
+        ("    COLOR EQU 5\n*=$C000\n    LDA #COLOR", 0xC000, [0xA9, 0x05]),
+        # An equate may follow the label it refers to.
+        (
+            "*=$C000\nSTART NOP\nNEXT = START+1\n    JMP NEXT",
+            0xC000,
+            [0xEA, 0x4C, 0x01, 0xC0],
+        ),
+    ],
+)
+def test_common_assembler_syntax(language_context, source, start, expected):
+    result = assemble(language_context, source)
+    assert result["success"], result["errors"]
+    assert result["startAddress"] == start
+    assert result["bytes"] == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "line", "message"),
+    [
+        ("*=$C000\n    RTSS", 2, "Unknown instruction"),
+        ("*=$C000\n.fill 10", 2, "Unknown directive"),
+        ("*=$C000\nLDA #300", 2, "does not fit in a byte"),
+        ("*=$C000\nWORD MISSING", 2, "Undefined symbol: MISSING"),
+        ("*=$C000\nLDA $12G4", 2, "Invalid expression"),
+        ("*=$C000\nLDA $10000", 2, "outside $0000-$FFFF"),
+    ],
+)
+def test_assembler_reports_mistakes_on_their_line(
+    language_context, source, line, message
+):
+    result = assemble(language_context, source)
+    assert not result["success"]
+    assert any(
+        error["lineNum"] == line and message in error["message"]
+        for error in result["errors"]
+    ), result["errors"]

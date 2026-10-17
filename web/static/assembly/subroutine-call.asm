@@ -2,7 +2,7 @@
 ; JSR pushes PC+2 to stack, jumps to address
 ; RTS pops address and returns
 ; Watch the Stack Pointer (SP) change!
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
     
     LDA #$00        ; A = 0
     JSR ADDTEN      ; Call subroutine

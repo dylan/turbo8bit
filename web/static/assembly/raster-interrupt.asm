@@ -10,7 +10,7 @@
 ;   $D020 - Border color
 ;   $D021 - Background color
 
-    ORG $0800
+    ORG $C000       ; Free RAM BASIC never uses: SYS 49152 runs it
 
     SEI             ; Disable interrupts
 

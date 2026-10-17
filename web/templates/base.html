@@ -9,7 +9,7 @@
     <meta name="description" content="{% block description %}Learn about the Commodore 64 by coding in BASIC and 6502 assembler. Interactive emulator, hardware diagrams, memory map, and SID chip player.{% endblock %}">
     {% set page_title = self.title() %}
     {% set page_description = self.description() %}
-    <meta name="theme-color" content="#056597">
+    <meta name="theme-color" content="#352879">
 
     <!-- Favicons (generated from favicon.png by tools/gen_favicons.py) -->
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icons/favicon.ico') }}">
@@ -63,7 +63,7 @@
 <body>
     <header class="site-header">
         <a href="/" class="site-brand">
-            <img class="site-brand-logo" src="{{ url_for('static', filename='icons/favicon-192.png') }}" alt="" width="192" height="192">
+            <img class="site-brand-logo" src="{{ url_for('static', filename='icons/logo.png') }}" alt="" width="146" height="184">
             <span class="site-brand-text">Turbo8bit</span>
         </a>
         <nav class="main-nav" aria-label="Main">
@@ -100,7 +100,7 @@
     
     <footer class="site-footer">
         <p class="ready-prompt">READY.</p>
-        <p class="footer-text">© 2025 Turbo8bit - Learn about the Commodore 64 by coding in BASIC and 6502 assembler</p>
+        <p class="footer-text">© 2025{% if CURRENT_YEAR > 2025 %}–{{ CURRENT_YEAR }}{% endif %} Turbo8bit - Learn about the Commodore 64 by coding in BASIC and 6502 assembler</p>
         <p class="footer-tagline">**** COMMODORE 64 BASIC V2 ****</p>
     </footer>
     
