@@ -29,6 +29,7 @@ import { C64Machine } from './machine.js';
 import { ChipModel, SamplingMethod } from './sid.js';
 import { VICIIRenderer } from './vic-ii.js';
 import { HidGamepadInput } from './gamepad-hid.js';
+import { readGamepadMapping } from './gamepad-mapping.js';
 
 // Ring buffer between the emulation loop and the Web Audio callback. Both run
 // on the main thread, but at unrelated rates (50Hz frames vs 2048-sample
@@ -60,7 +61,6 @@ const TURBO_MAX_FRAMES = 40;
 
 // The KERNAL keyboard buffer at $0277 holds this many keys ($C6 counts them).
 const KEYBOARD_BUFFER_SIZE = 10;
-const GAMEPAD_DEAD_ZONE = 0.4;
 const MOUSE_FRAME_DELTA = 24;
 
 // ============================================================================
@@ -239,6 +239,8 @@ export class C64Emulator {
         this.gamepadAvailable = true;
         this.gamepadUnmapped = false;
         this.gamepadHidInput = null;
+        this.gamepadMapper = null;
+        this.gamepadMappingError = '';
         this.gamepadTransport = null;
         this.gamepadReady = false;
         this.mouseEnabled = false;
@@ -589,7 +591,9 @@ export class C64Emulator {
                 status: this.gamepadStatus, name: this.gamepadName,
                 hidAvailable: typeof navigator !== 'undefined' && typeof navigator.hid?.requestDevice === 'function',
                 hidConnected: Boolean(this.gamepadHidInput?.connected),
-                transport: this.gamepadTransport, ready: this.gamepadReady },
+                transport: this.gamepadTransport, ready: this.gamepadReady,
+                mapping: this.gamepadMapper ? 'custom' : 'default',
+                error: this.gamepadMappingError || (this.gamepadTransport === 'hid' ? this.gamepadHidInput.error || '' : '') },
             mouse: { enabled: this.mouseEnabled, captured, status }
         };
     }
@@ -972,13 +976,21 @@ export class C64Emulator {
         else this.pollGamepad();
     }
 
-    async connectGamepadHid() {
+    setGamepadMapper(mapper = null) {
+        if (mapper !== null && typeof mapper !== 'function') {
+            throw new TypeError('A gamepad mapper must be a function or null.');
+        }
+        this.gamepadMapper = mapper;
+        this.pollGamepad();
+    }
+
+    async connectGamepadHid(options) {
         this.startGamepadDiscovery();
         if (!this.gamepadHidInput) {
             this.gamepadHidInput = new HidGamepadInput(() => this.pollGamepad());
         }
         try {
-            return await this.gamepadHidInput.connect();
+            return await this.gamepadHidInput.connect(options);
         } finally {
             this.pollGamepad();
         }
@@ -1006,27 +1018,32 @@ export class C64Emulator {
             }
         }
         const connected = pads.find(candidate => candidate?.connected);
-        const nativePad = pads.find(candidate => candidate?.connected && candidate.mapping === 'standard');
         const hidConnected = Boolean(this.gamepadHidInput?.connected);
-        const pad = nativePad ?? (hidConnected ? this.gamepadHidInput.gamepad : null);
-        this.gamepadDevice = pad ?? null;
-        this.gamepadTransport = nativePad ? 'gamepad' : hidConnected ? 'hid' : null;
-        this.gamepadReady = Boolean(nativePad || (hidConnected && this.gamepadHidInput.ready));
-        this.gamepadAvailable = available;
-        this.gamepadName = (pad ?? connected)?.id ?? '';
-        const buttons = new Set();
-        if (this.gamepadEnabled && pad && this.gamepadReady && this.inputCaptured() && this.activeJoystick > 0) {
-            const held = index => pad.buttons[index]?.pressed;
-            const x = pad.axes[0] ?? 0, y = pad.axes[1] ?? 0;
-            if (x < -GAMEPAD_DEAD_ZONE || held(14)) buttons.add('left');
-            if (x > GAMEPAD_DEAD_ZONE || held(15)) buttons.add('right');
-            if (y < -GAMEPAD_DEAD_ZONE || held(12)) buttons.add('up');
-            if (y > GAMEPAD_DEAD_ZONE || held(13)) buttons.add('down');
-            if ([0, 1, 2, 3].some(held)) buttons.add('fire');
+        let pad = null, transport = null, buttons = null;
+        this.gamepadMappingError = '';
+        try {
+            for (const candidate of pads) {
+                if (!candidate?.connected) continue;
+                buttons = readGamepadMapping(candidate, 'gamepad', this.gamepadMapper);
+                if (buttons !== null) { pad = candidate; transport = 'gamepad'; break; }
+            }
+            if (!pad && hidConnected) {
+                const candidate = this.gamepadHidInput.gamepad;
+                buttons = readGamepadMapping(candidate, 'hid', this.gamepadMapper);
+                if (buttons !== null) { pad = candidate; transport = 'hid'; }
+            }
+        } catch (error) {
+            this.gamepadMappingError = `Controller mapping failed: ${error?.message ?? String(error)}`;
         }
-        this.setGamepadButtons(buttons);
+        this.gamepadDevice = pad;
+        this.gamepadTransport = transport;
+        this.gamepadReady = Boolean(pad && (transport === 'gamepad' || this.gamepadHidInput.ready));
+        this.gamepadAvailable = available;
+        this.gamepadName = (pad ?? connected ?? this.gamepadHidInput?.gamepad)?.id ?? '';
+        const captured = this.gamepadEnabled && this.gamepadReady && this.inputCaptured() && this.activeJoystick > 0;
+        this.setGamepadButtons(captured ? buttons : new Set());
         if (!this.inputCaptured()) this.releaseMouse();
-        this.gamepadUnmapped = Boolean(connected) && !pad;
+        this.gamepadUnmapped = Boolean(connected || hidConnected) && !pad;
         this.updateInputState();
     }
 
@@ -1035,18 +1052,21 @@ export class C64Emulator {
         if (!this.gamepadDiscoveryStarted) {
             connection = 'off';
             message = 'Gamepad capture is off.';
-        } else if (!this.gamepadAvailable && !this.gamepadDevice) {
+        } else if (this.gamepadMappingError) {
+            connection = 'unsupported';
+            message = this.gamepadMappingError;
+        } else if (!this.gamepadAvailable && !this.gamepadDevice && !this.gamepadUnmapped) {
             connection = 'unavailable';
             message = 'Gamepad controls are unavailable in this browser.';
         } else if (!this.gamepadDevice) {
             connection = this.gamepadUnmapped ? 'unsupported' : 'waiting';
             message = this.gamepadUnmapped
-                ? 'This controller has no standard mapping. Use a standard gamepad.'
-                : 'Waiting for a controller. Press a face button so this browser can detect it.';
+                ? this.gamepadMapper ? 'No controller matches the custom input mapping.' : 'This controller has no standard mapping. Set a custom mapping or use a standard gamepad.'
+                : 'Waiting for a controller. Press a button so this browser can detect it.';
         } else {
             connection = this.gamepadEnabled && this.gamepadReady && this.inputCaptured() && this.activeJoystick ? 'active' : 'connected';
             if (!this.gamepadReady) {
-                message = 'Controller connection open. Waiting for controller input.';
+                message = this.gamepadHidInput?.error || 'Controller connection open. Waiting for controller input.';
                 if (!this.gamepadEnabled) message += ' Capture is off.';
             } else if (!this.gamepadEnabled) message = 'Controller connected. Capture is off.';
             else if (!this.activeJoystick) message = 'Gamepad connected. Joystick mode is off.';
@@ -1054,7 +1074,7 @@ export class C64Emulator {
             else if (!this.running) message = 'Gamepad connected. Start the C64 to play.';
             else if (!this.inputCaptured()) message = 'Gamepad connected. Click the C64 screen to play.';
             else {
-                const controls = this.gamepadTransport === 'hid'
+                const controls = this.gamepadMapper ? 'Your custom controller bindings are active.' : this.gamepadTransport === 'hid'
                     ? 'D-pad or stick moves; the first four buttons fire.'
                     : 'D-pad or left stick moves; any face button fires.';
                 message = `Gamepad active on joystick ${this.activeJoystick}. ${controls}`;

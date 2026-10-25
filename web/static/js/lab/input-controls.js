@@ -5,17 +5,19 @@ let nextControlsId = 0;
 
 function gamepadInfo({ gamepad: pad }) {
     const connected = ['active', 'connected'].includes(pad.connection);
-    const connection = connected ? (pad.ready ? 'Connected' : 'Waiting for input')
+    const connection = pad.error ? 'Input error' : connected ? (pad.ready ? 'Connected' : 'Waiting for input')
         : { off: 'Not checked', waiting: 'Waiting for browser', unsupported: 'Unsupported mapping', unavailable: 'Unavailable' }[pad.connection];
     let guidance = 'Focus this page and press a controller button. Pair it in your computer’s settings if needed. If already paired and still not detected, try USB or another browser.';
-    if (connected) {
+    if (pad.error) guidance = pad.error;
+    else if (connected) {
         if (!pad.ready) guidance = 'Connection open. Press a controller button to check its input. Capture waits for a supported report.';
         else if (!pad.enabled) guidance = 'This browser can see your controller. Turn capture on when you want to play.';
+        else if (pad.connection === 'active' && pad.mapping === 'custom') guidance = 'Your custom controller bindings are active.';
         else if (pad.connection === 'active') guidance = pad.transport === 'hid'
             ? 'D-pad or stick moves. The first four buttons fire.'
             : 'D-pad or left stick moves. Any face button fires.';
         else guidance = pad.status;
-    } else if (pad.connection === 'unsupported') guidance = 'This browser sees the controller, but its button mapping is unsupported. Use another controller or the keyboard.';
+    } else if (pad.connection === 'unsupported') guidance = pad.status;
     else if (pad.connection === 'unavailable') guidance = 'This browser cannot access a gamepad. You can still use the keyboard.';
     return {
         title: 'Gamepad', subtitle: 'Controller input', connection, name: pad.name, guidance,
@@ -35,7 +37,17 @@ function mouseInfo({ mouse }) {
 }
 
 // Showing or hiding these controls never changes the emulator's capture settings.
-export function attachInputControls(emulator, { frame, trigger, enabled = true }) {
+export function attachInputControls(emulator, {
+    frame, trigger, enabled = true, devices: initialDevices = ['gamepad', 'mouse'],
+    connectGamepad = () => emulator.connectGamepadHid()
+}) {
+    if (typeof connectGamepad !== 'function') throw new TypeError('connectGamepad must be a function.');
+    function validateDevices(names) {
+        if (!Array.isArray(names) || names.some(name => !['gamepad', 'mouse'].includes(name)) || new Set(names).size !== names.length) {
+            throw new TypeError('Input devices must be an array of unique gamepad or mouse names.');
+        }
+    }
+    validateDevices(initialDevices);
     const canvas = emulator.canvas;
     const controller = new AbortController();
     const options = { signal: controller.signal };
@@ -73,7 +85,9 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
     const tray = overlay.querySelector('.input-controls__tray');
     const detail = overlay.querySelector('.input-controls__detail');
     const detailBody = overlay.querySelector('.input-controls__detail-body');
-    const devices = [...overlay.querySelectorAll('[data-input-device]')];
+    const allDevices = [...overlay.querySelectorAll('[data-input-device]')];
+    allDevices.forEach(button => { button.hidden = true; });
+    let devices = [];
     const capture = overlay.querySelector('[data-input-capture]');
     const direct = overlay.querySelector('[data-input-hid]');
     const directToggle = overlay.querySelector('[data-input-hid-toggle]');
@@ -96,11 +110,11 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         overlay.dataset.open = String(open);
         tray.inert = !open;
         tray.setAttribute('aria-hidden', String(!open));
-        trigger.hidden = !available;
+        trigger.hidden = !available || !devices.length;
         trigger.setAttribute('aria-expanded', String(open));
         trigger.title = open ? 'Close input controls' : 'Open input controls';
         const pad = gamepadInfo(state), mouse = mouseInfo(state);
-        for (const button of devices) {
+        for (const button of allDevices) {
             const device = button.dataset.inputDevice;
             const info = device === 'gamepad' ? pad : mouse;
             button.dataset.selected = String(selected === device);
@@ -108,7 +122,7 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
             const captureState = info.active ? 'active' : info.enabled ? 'on' : 'off';
             button.setAttribute('aria-label', `${info.title}. ${info.connection}. Capture ${captureState}. Show controls.`);
             const connection = state.gamepad.connection;
-            const indicator = device === 'mouse' ? captureState
+            const indicator = device === 'gamepad' && state.gamepad.error ? 'warning' : device === 'mouse' ? captureState
                 : ['connected', 'active'].includes(connection) ? (state.gamepad.ready ? 'connected' : 'waiting')
                 : ['unsupported', 'unavailable'].includes(connection) ? 'warning'
                 : connection === 'waiting' ? 'waiting' : 'off';
@@ -149,19 +163,20 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         directError.textContent = hidError;
         directError.hidden = !hidError;
         directToggle.setAttribute('aria-describedby', `${id}-hid-help${hidError ? ` ${id}-hid-error` : ''}`);
-        const message = `Gamepad: ${pad.connection}, capture ${pad.active ? 'active' : pad.enabled ? 'on' : 'off'}. Mouse: ${mouse.connection}, capture ${mouse.active ? 'active' : mouse.enabled ? 'on' : 'off'}.`;
+        const message = devices.map(button => button.dataset.inputDevice === 'gamepad' ? pad : mouse)
+            .map(info => `${info.title}: ${info.connection}, capture ${info.active ? 'active' : info.enabled ? 'on' : 'off'}.`).join(' ');
         if (feedback.textContent !== message) feedback.textContent = message;
     }
 
     function restoreFocus() {
         const fullscreen = document.fullscreenElement;
-        const target = fullscreen && !fullscreen.contains(trigger) ? canvas : trigger;
+        const target = !devices.length || (fullscreen && !fullscreen.contains(trigger)) ? canvas : trigger;
         target.focus({ preventScroll: true });
     }
 
     function setOpen(value) {
         if (destroyed) return;
-        const next = available && Boolean(value);
+        const next = available && devices.length > 0 && Boolean(value);
         if (next === open) return;
         if (!next && overlay.contains(document.activeElement)) restoreFocus();
         open = next;
@@ -179,8 +194,30 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
             canvas.focus({ preventScroll: true });
         }
         available = next;
-        trigger.hidden = !available;
+        trigger.hidden = !available || !devices.length;
         if (changed) setOpen(false);
+    }
+
+    function setDevices(names) {
+        if (destroyed) return;
+        validateDevices(names);
+        const next = names.map(name => allDevices.find(button => button.dataset.inputDevice === name));
+        if (next.length === devices.length && next.every((button, index) => button === devices[index])) return;
+        const removingSelection = selected !== null && !names.includes(selected);
+        const active = document.activeElement;
+        const moveFocus = (allDevices.includes(active) && !next.includes(active)) ||
+            (removingSelection && detail.contains(active)) || (!next.length && active === trigger);
+        devices = next;
+        selectionRevision++;
+        if (removingSelection) selected = null;
+        if (!devices.length) open = false;
+        for (const button of allDevices) button.hidden = !devices.includes(button);
+        devices.forEach((button, index) => {
+            button.style.setProperty('--input-controls-order', devices.length - index - 1);
+            tray.append(button);
+        });
+        update();
+        if (moveFocus) (open && devices.length ? devices[0] : canvas).focus({ preventScroll: true });
     }
 
     trigger.addEventListener('click', event => {
@@ -188,8 +225,9 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         setOpen(!open);
         if (open && event.detail === 0) devices[0].focus({ preventScroll: true });
     }, options);
-    for (const button of devices) {
+    for (const button of allDevices) {
         button.addEventListener('click', event => {
+            if (!devices.includes(button)) return;
             overlay.dataset.instant = String(event.detail === 0);
             const next = selected === button.dataset.inputDevice ? null : button.dataset.inputDevice;
             const changed = next !== null && next !== selected;
@@ -206,7 +244,9 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         event.stopPropagation();
         overlay.dataset.instant = 'true';
         const current = devices.indexOf(document.activeElement);
-        const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : (current + 1) % 2;
+        const offset = event.key === 'ArrowLeft' ? -1 : 1;
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? devices.length - 1
+            : (current + offset + devices.length) % devices.length;
         devices[next].focus({ preventScroll: true });
     }, options);
     capture.addEventListener('click', event => {
@@ -232,10 +272,10 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         update();
         try {
             if (disconnecting) await emulator.disconnectGamepadHid();
-            else await emulator.connectGamepadHid();
+            else await connectGamepad();
         } catch (error) {
             if (controller.signal.aborted) return;
-            hidError = `${disconnecting ? 'Disconnect' : 'Connection'} failed: ${error.message}`;
+            hidError = `${disconnecting ? 'Disconnect' : 'Connection'} failed: ${error?.message ?? String(error)}`;
         } finally {
             document.removeEventListener('focusin', trackFocus);
             if (!controller.signal.aborted) {
@@ -277,10 +317,12 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         state = next;
         update();
     });
+    setDevices(initialDevices);
     update();
     return {
         setEnabled,
         setOpen,
+        setDevices,
         destroy() {
             if (destroyed) return;
             if (overlay.contains(document.activeElement) || document.activeElement === trigger) canvas.focus({ preventScroll: true });

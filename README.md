@@ -48,7 +48,8 @@ alongside them.
   mouse also release on pause. Input sources are opt-in and capture only while
   the C64 screen is focused and running. Enabled sources work together,
   including when mouse and joystick share port 1. See the [input controls API](docs/input-controls.md)
-  to enable devices or show and hide the overlay from JavaScript.
+  to customize bindings, controller selection and HID decoding, or change which
+  devices appear in the optional dock from JavaScript.
 - The screen toolbar also pauses, runs in **Turbo**, adds a **CRT** look, saves
   a snapshot and goes full screen. Pointing at the screen shows the **inspector**:
   the character's screen and colour RAM addresses, the POKEs that change it, an
@@ -168,6 +169,8 @@ to preserve read-sensitive interrupt and collision latches.
 | Module | Purpose |
 |--------|---------|
 | `emulator.js` | `C64Emulator` — canvas rendering, Web Audio, keyboard, drag-and-drop. Entry point for `/`, `/asm` and `/games` |
+| `gamepad-mapping.js` | Default joystick bindings and host-supplied controller mappers |
+| `gamepad-hid.js`, `gamepad-hid-reports.js` | Explicit WebHID connections, descriptor decoding and verified controller profiles |
 | `sid-player.js` | `SIDPlayer` and PSID/RSID parsing. Entry point for `/sid` |
 | `machine.js` | `C64Machine` — the bus, banking, CIA timers, keyboard matrix, frame loop |
 | `mos6510.js` | The CPU. All 256 opcodes including the undocumented ones |
@@ -277,7 +280,7 @@ and cartridge code are all covered without a browser.
 Some cartridge tests skip unless the matching CRT dump is present locally — CRT
 files live in Cloud Storage rather than in the repo.
 
-Current baseline: **878 passed, 25 skipped, 0 failed** (903 collected), with no
+Current baseline: **905 passed, 25 skipped, 0 failed** (930 collected), with no
 unchecked boolean-return test warnings.
 
 The suite also covers browser-wrapper audio/input/lifecycle behavior using

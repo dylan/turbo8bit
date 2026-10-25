@@ -58,6 +58,10 @@ function descriptorReports(collections) {
                     let kind, target, keys;
                     if ((usage === 0x10030 || usage === 0x10031) && item.logicalMaximum - item.logicalMinimum >= 2) {
                         kind = 'axis'; target = usage - 0x10030; keys = [`axis${target}`];
+                    } else if (usage >= 0x10032 && usage <= 0x10038 && item.logicalMaximum - item.logicalMinimum >= 2) {
+                        kind = 'hid-axis'; keys = [`hid-axis${usage}`];
+                    } else if (usage >= 0x90005 && usage <= 0x9ffff) {
+                        kind = 'hid-button'; keys = [`hid-button${usage}`];
                     } else if (usage === 0x10039 && [3, 7].includes(item.logicalMaximum - item.logicalMinimum)) {
                         kind = 'hat'; keys = [12, 13, 14, 15].map(button => `button${button}`);
                     } else {
@@ -68,7 +72,7 @@ function descriptorReports(collections) {
                     }
                     if (keys.some(key => claimed.has(key))) continue;
                     keys.forEach(key => claimed.add(key));
-                    fields.push({ kind, target, offset: start + index * item.reportSize,
+                    fields.push({ kind, target, usage, offset: start + index * item.reportSize,
                         size: item.reportSize, minimum: item.logicalMinimum, maximum: item.logicalMaximum });
                 }
             }
@@ -95,8 +99,10 @@ function readSwitchReport(reportId, data, gamepad) {
 
 export function createHidGamepadDecoder(device) {
     const reports = descriptorReports(device.collections);
-    const switchProfile = device.vendorId === 0x057e && device.productId === 0x2009;
+    const switchProfile = device.vendorId === 0x057e && device.productId === 0x2009 && device.collections.some(isGamepadCollection);
     if (!reports.size && !switchProfile) return null;
+    const requiredReports = [...reports].filter(([, report]) =>
+        report.fields.some(field => !field.kind.startsWith('hid-'))).map(([reportId]) => reportId);
     const seen = new Set();
     return (reportId, data, gamepad) => {
         // WebHID strips the report ID and may supply a view into a larger buffer.
@@ -107,16 +113,20 @@ export function createHidGamepadDecoder(device) {
         for (const field of report.fields) {
             const value = readField(data, field);
             const valid = value >= field.minimum && value <= field.maximum;
-            if (field.kind === 'axis') {
-                gamepad.axes[field.target] = valid ? normalizeAxis(value, field.minimum, field.maximum) : 0;
+            if (field.kind === 'axis' || field.kind === 'hid-axis') {
+                const axis = valid ? normalizeAxis(value, field.minimum, field.maximum) : 0;
+                if (field.kind === 'axis') gamepad.axes[field.target] = axis;
+                gamepad.hid.axes[field.usage] = axis;
             } else if (field.kind === 'hat') {
                 const direction = valid ? HAT_DIRECTIONS[(value - field.minimum) * (field.maximum - field.minimum === 3 ? 2 : 1)] : [];
                 for (const button of [12, 13, 14, 15]) setButton(gamepad, button, direction.includes(button));
             } else {
-                setButton(gamepad, field.target, valid && value > field.minimum);
+                const pressed = valid && value > field.minimum;
+                if (field.kind === 'button') setButton(gamepad, field.target, pressed);
+                if (field.usage >= 0x90001 && field.usage <= 0x9ffff) gamepad.hid.buttons[field.usage - 0x90000] = pressed;
             }
         }
         seen.add(reportId);
-        return seen.size === reports.size;
+        return requiredReports.every(reportId => seen.has(reportId));
     };
 }

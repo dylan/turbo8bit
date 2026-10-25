@@ -26,7 +26,7 @@ Fonts. Keep it that way.
 
 ```powershell
 .\dd.ps1 run             # dev server on http://localhost:8082
-.\dd.ps1 test            # pytest; baseline is 878 passed, 25 skipped, 0 failed
+.\dd.ps1 test            # pytest; baseline is 905 passed, 25 skipped, 0 failed
 .\dd.ps1 format          # Black (-Check to report without rewriting)
 .\dd.ps1 deploy          # App Engine (project is hard-pinned inside dd.ps1)
 .\dd.ps1 gen             # regenerate logo + favicons + OG image + BASIC sample previews
@@ -34,7 +34,7 @@ Fonts. Keep it that way.
 ```
 
 The 25 skips are cartridge tests whose CRT dumps are not in the repo. The suite
-collects 903 cases. Investigate unexpected drops in collection, and update this
+collects 930 cases. Investigate unexpected drops in collection, and update this
 baseline when adding tests.
 
 ## Layout
@@ -146,9 +146,19 @@ in turbo mode. Releasing either source must preserve the other's held buttons.
 Connection/capture feedback uses `onInputChange`, separate from pause/turbo
 state listeners.
 
+**Bindings are separate from detection and capture.** `setGamepadMapper()`
+accepts a synchronous snapshot-to-actions callback; returning null skips a device.
+A custom mapper can support raw browser layouts and choose a particular device.
+Setting bindings alone must not start discovery, enable capture or change ports.
+Copy returned action sets before storing holds. Mapping and decoding errors release
+only gamepad input and surface through `getInputState().gamepad.error`; neutralize
+snapshots before recovery. The dock must use custom-binding instructions when
+configured rather than advertise the default face buttons.
+
 **Direct HID gamepad input is optional and read-only.** Only an explicit
-`connectGamepadHid()` call may open the native chooser. Filter by Generic Desktop
-gamepad/joystick usage, without a vendor/product restriction. Decode absolute
+`connectGamepadHid()` call may open the native chooser. The default chooser filters Generic Desktop
+gamepad/joystick usages without a vendor/product restriction. Hosts may supply
+explicit native filters and a verified report-decoder factory for other formats. Decode absolute
 axes, hat/d-pad and button usages from the top-level flattened input reports;
 never traverse their children again or assume vendor bytes have a standard
 layout. Reject ambiguous or unsupported descriptors before opening. Verified
@@ -158,7 +168,9 @@ forwards before supported reports for all mapped controls. Connect/disconnect/
 cancel never change capture flags or port selection. Pending operation generations
 and device ownership prevent late completion from closing or detaching a newer
 connection. Chooser completion restores UI focus only if the user has not moved
-elsewhere, closed the dock or changed devices.
+elsewhere, closed the dock or changed devices. `setDevices()` changes only visible dock entries
+and their order; removing a focused entry must move focus to a visible control
+or the canvas, without changing source capture settings.
 
 **Mouse and joystick sources may overlap.** The optional 1351 mouse is on
 port 1. Enabling it must not change the selected joystick port or release another

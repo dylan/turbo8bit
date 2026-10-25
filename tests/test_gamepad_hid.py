@@ -138,15 +138,11 @@ def test_connection_is_explicit_filtered_singleflight_and_neutral(hid_gamepad):
     assert ctx.eval("outputCalls") == 0
 
 
-@pytest.mark.parametrize("cancellation", ["empty", "not_found", "wrong_device"])
+@pytest.mark.parametrize("cancellation", ["empty", "not_found"])
 def test_cancelled_or_unmatched_chooser_does_not_connect(hid_gamepad, cancellation):
     ctx = hid_gamepad
     if cancellation == "empty":
         ctx.eval("selected = [];")
-    elif cancellation == "wrong_device":
-        ctx.eval(
-            "selected = [{ collections: [{ usagePage: 1, usage: 2, inputReports: [] }] }];"
-        )
     else:
         ctx.eval("""
             hid.requestDevice = () => Promise.reject(
@@ -766,3 +762,170 @@ def test_wide_signed_axes_do_not_overflow_bitwise_numbers(hid_gamepad, size, pac
     ctx.eval(f"report({json.dumps(packet)}, 3, 7);")
     assert ctx.eval("JSON.stringify(input.gamepad.axes)") == "[-1,1]"
     assert ctx.eval("input.ready && input.gamepad.buttons[0].pressed")
+
+
+def test_host_decoder_can_extend_a_vendor_format_without_transport_access(hid_gamepad):
+    ctx = hid_gamepad
+    use_descriptor(ctx, [])
+    ctx.eval("""
+        var factoryInfo;
+        var options = { createDecoder(info) {
+            factoryInfo = info;
+            if (info.vendorId !== 0x1234) return null;
+            return (reportId, data, pad) => {
+                if (reportId !== 9 || data.byteLength < 1) return false;
+                pad.axes[0] = (data.getUint8(0) & 1) ? -1 : 0;
+                pad.buttons[0] = { pressed: Boolean(data.getUint8(0) & 2), value: (data.getUint8(0) & 2) ? 1 : 0 };
+                return true;
+            };
+        } };
+    """)
+    assert await_js(ctx, "input.connect(options)")
+    assert json.loads(ctx.eval("JSON.stringify(Object.keys(factoryInfo).sort())")) == [
+        "collections",
+        "productId",
+        "productName",
+        "vendorId",
+    ]
+    assert ctx.eval("!('open' in factoryInfo) && !('sendReport' in factoryInfo)")
+    ctx.eval("report([3], 9);")
+    assert ctx.eval(
+        "input.ready && input.gamepad.axes[0] === -1 && input.gamepad.buttons[0].pressed"
+    )
+    ctx.eval("report([0], 9);")
+    assert ctx.eval(
+        "input.gamepad.axes[0] === 0 && !input.gamepad.buttons[0].pressed && outputCalls === 0"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "throw new Error('Bad packet')",
+        "throw null",
+        "return undefined",
+        "pad.axes = [NaN]; return true",
+        "pad.axes = [2]; return true",
+        "pad.buttons = [true]; return true",
+        "pad.buttons[0].value = 2; return true",
+    ],
+)
+def test_decoder_errors_clear_holds_report_failure_and_allow_recovery(
+    hid_gamepad, failure
+):
+    ctx = hid_gamepad
+    ctx.eval(f"""
+        var fail = false;
+        var options = {{ createDecoder: () => (reportId, data, pad) => {{
+            if (fail) {{ {failure}; }}
+            pad.axes[0] = -1;
+            pad.buttons[0] = {{ pressed: true, value: 1 }};
+            return true;
+        }} }};
+    """)
+    assert await_js(ctx, "input.connect(options)")
+    ctx.eval("report([1]); fail = true; report([1]);")
+    assert ctx.eval("!input.ready && input.connected && changes.length === 3")
+    assert "Controller input decoding failed:" in ctx.eval("input.error")
+    assert ctx.eval(
+        "input.gamepad.axes.every(axis => axis === 0) && input.gamepad.buttons.every(button => !button.pressed)"
+    )
+    ctx.eval("report([1]);")
+    assert ctx.eval("changes.length") == 3
+    ctx.eval("fail = false; report([1]);")
+    assert ctx.eval(
+        "input.ready && input.error === '' && changes.length === 4 && outputCalls === 0"
+    )
+
+
+@pytest.mark.parametrize(
+    "factory", ["42", "() => undefined", "() => Promise.resolve(null)"]
+)
+def test_invalid_decoder_factory_fails_without_opening(hid_gamepad, factory):
+    ctx = hid_gamepad
+    message = await_js(
+        ctx,
+        f"Promise.resolve().then(() => input.connect({{createDecoder: {factory}}})).catch(error => error.message)",
+    )
+    assert "must" in message
+    assert ctx.eval("openCalls === 0 && !input.connected && outputCalls === 0")
+
+
+def test_additional_hid_controls_are_available_without_standard_button_collisions(
+    hid_gamepad,
+):
+    ctx = hid_gamepad
+    reports = joystick_reports(1)
+    reports.append(
+        {
+            "reportId": 2,
+            "items": [
+                hid_item([0x10032, 0x10033], 8, -127, 127),
+                hid_item([0x9000D], 8, 0, 1),
+            ],
+        }
+    )
+    use_descriptor(ctx, reports)
+    connect(ctx)
+    ctx.eval("report([0, 0, 0], 1);")
+    assert ctx.eval("input.ready")
+    ctx.eval("report([127, 129, 1], 2);")
+    assert ctx.eval(
+        "input.gamepad.hid.axes[0x10032] === 1 && input.gamepad.hid.axes[0x10033] === -1"
+    )
+    assert ctx.eval("input.gamepad.hid.buttons[13]")
+    assert ctx.eval(
+        "!input.gamepad.buttons[12].pressed && !input.gamepad.buttons[13].pressed"
+    )
+    ctx.eval("report([0, 0, 0], 2);")
+    assert ctx.eval("!input.gamepad.hid.buttons[13] && changes.length === 2")
+
+
+def test_selected_interface_without_a_decoder_is_reported_before_opening(hid_gamepad):
+    ctx = hid_gamepad
+    ctx.eval(
+        "selected = [{ vendorId: 0x1234, productId: 1, collections: [{ usagePage: 1, usage: 2, inputReports: [] }] }];"
+    )
+    assert "input format is unsupported" in await_js(
+        ctx, "input.connect().catch(error => error.message)"
+    )
+    assert ctx.eval("!input.connected && openCalls === 0 && changes.length === 0")
+
+
+def test_host_can_supply_filters_for_a_verified_vendor_collection(hid_gamepad):
+    ctx = hid_gamepad
+    use_descriptor(ctx, [])
+    ctx.eval("""
+        device.collections[0].usagePage = 0xff00;
+        device.collections[0].usage = 1;
+        var customOptions = {
+            filters: [{ vendorId: 0x1234, productId: 0xabcd }],
+            createDecoder(info) {
+                if (info.vendorId !== 0x1234 || info.collections[0].usagePage !== 0xff00) return null;
+                return (reportId, data, pad) => {
+                    if (reportId !== 5 || data.byteLength !== 1) return false;
+                    pad.buttons[0] = { pressed: data.getUint8(0) === 1, value: data.getUint8(0) === 1 ? 1 : 0 };
+                    return true;
+                };
+            }
+        };
+    """)
+    assert await_js(ctx, "input.connect(customOptions)")
+    assert json.loads(ctx.eval("JSON.stringify(requestOptions.filters)")) == [
+        {"vendorId": 0x1234, "productId": 0xABCD}
+    ]
+    ctx.eval("report([1], 5);")
+    assert ctx.eval(
+        "input.ready && input.gamepad.buttons[0].pressed && outputCalls === 0"
+    )
+
+
+@pytest.mark.parametrize("filters", ["[]", "null", "'all'"])
+def test_invalid_custom_filters_do_not_open_the_chooser(hid_gamepad, filters):
+    ctx = hid_gamepad
+    message = await_js(
+        ctx,
+        f"Promise.resolve().then(() => input.connect({{filters: {filters}}})).catch(error => error.message)",
+    )
+    assert "device filter" in message
+    assert ctx.eval("requestCalls === 0 && openCalls === 0 && !input.connected")

@@ -669,6 +669,7 @@ body {
     touch-action: manipulation;
     user-select: none;
 }
+.input-controls__device[hidden] { display: none; }
 .input-controls__face {
     position: relative;
     display: grid;
