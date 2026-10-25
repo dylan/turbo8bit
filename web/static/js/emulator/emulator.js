@@ -60,6 +60,7 @@ const TURBO_MAX_FRAMES = 40;
 // The KERNAL keyboard buffer at $0277 holds this many keys ($C6 counts them).
 const KEYBOARD_BUFFER_SIZE = 10;
 const GAMEPAD_DEAD_ZONE = 0.4;
+const MOUSE_FRAME_DELTA = 24;
 
 // ============================================================================
 // KEYBOARD MATRIX MAPPING
@@ -218,7 +219,7 @@ export class C64Emulator {
         // rather than running their own timers.
         this.frameListeners = new Set();
         this.stateListeners = new Set();
-        this.gamepadListeners = new Set();
+        this.inputListeners = new Set();
 
         // Joystick emulation state
         // When activeJoystick is 1 or 2, arrow keys and the gamepad use that port
@@ -228,7 +229,19 @@ export class C64Emulator {
         // Keyboard and controller holds are independent: releasing either must
         // not lift a button the other still holds.
         this.gamepadState = new Set();
-        this.gamepadStatus = '';
+        this.gamepadEnabled = false;
+        this.gamepadConnection = 'off';
+        this.gamepadStatus = 'Gamepad capture is off.';
+        this.gamepadName = '';
+        this.gamepadDiscoveryStarted = false;
+        this.gamepadDevice = null;
+        this.gamepadAvailable = true;
+        this.gamepadUnmapped = false;
+        this.mouseEnabled = false;
+        this.mouseButtons = new Set();
+        this.mouseDeltaX = 0;
+        this.mouseDeltaY = 0;
+        this.inputStateKey = JSON.stringify(this.getInputState());
 
         // True while the user is physically holding a PC Shift key.
         this.physicalShift = false;
@@ -263,7 +276,7 @@ export class C64Emulator {
     reset({ keepCartridge = false } = {}) {
         this.fastBoot = false;
         this.cancelTyping();
-        this.releaseAllKeys();
+        this.releaseAllInput();
         this.beginBasicBoot(keepCartridge
             ? new Error('Reset the C64 before loading a BASIC program with a cartridge mounted.')
             : null);
@@ -334,6 +347,7 @@ export class C64Emulator {
         if (this.running) return;
 
         this.running = true;
+        this.updateInputState();
         const generation = ++this.runGeneration;
 
         // Initialize audio if enabled
@@ -465,7 +479,7 @@ export class C64Emulator {
             this.animationId = null;
         }
         this.cancelTyping();
-        this.releaseAllKeys();
+        this.releaseAllInput();
         for (const waiter of this.bootWaiters.splice(0)) {
             waiter.reject(new Error('Emulation stopped before BASIC was ready.'));
         }
@@ -503,6 +517,8 @@ export class C64Emulator {
     pause() {
         this.paused = true;
         this.setGamepadButtons(new Set());
+        this.releaseMouse();
+        this.updateInputState();
         this.notifyStateChange();
     }
 
@@ -511,6 +527,7 @@ export class C64Emulator {
     //
     resume() {
         this.paused = false;
+        this.updateInputState();
         this.notifyStateChange();
     }
 
@@ -548,11 +565,39 @@ export class C64Emulator {
         return () => this.stateListeners.delete(listener);
     }
 
-    // Subscribe to connection and capture feedback without treating input
-    // changes as pause/turbo changes.
-    onGamepadChange(listener) {
-        this.gamepadListeners.add(listener);
-        return () => this.gamepadListeners.delete(listener);
+    // Input observers receive changes only; getInputState() supplies the initial state.
+    onInputChange(listener) {
+        this.inputListeners.add(listener);
+        return () => this.inputListeners.delete(listener);
+    }
+
+    getInputState() {
+        const captured = this.mouseEnabled && this.inputCaptured();
+        let status = '1351 mouse input is off.';
+        if (this.mouseEnabled) {
+            if (this.paused) status = '1351 mouse on port 1. Resume the C64 to use it.';
+            else if (!this.running) status = '1351 mouse on port 1. Start the C64 to use it.';
+            else if (!captured) status = '1351 mouse on port 1. Click the C64 screen to use it.';
+            else status = '1351 mouse active on port 1. Move and use the left or right button.';
+        }
+        return {
+            gamepad: { enabled: this.gamepadEnabled, connection: this.gamepadConnection,
+                status: this.gamepadStatus, name: this.gamepadName },
+            mouse: { enabled: this.mouseEnabled, captured, status }
+        };
+    }
+
+    notifyInputChange() {
+        const state = this.getInputState();
+        const key = JSON.stringify(state);
+        if (key === this.inputStateKey) return;
+        this.inputStateKey = key;
+        for (const listener of this.inputListeners) listener(state);
+    }
+
+    inputCaptured() {
+        return Boolean(this.keyboardEnabled && this.running && !this.paused &&
+            !document.hidden && document.activeElement === this.canvas && document.hasFocus());
     }
 
     notifyStateChange() {
@@ -692,6 +737,7 @@ export class C64Emulator {
     // @private
     //
     runOneFrame() {
+        this.flushMouseMovement();
         if (this.audioEnabled && this.audioProcessor) {
             this.machine.runFrame(this.frameSamples);
             this.pushFrameAudio();
@@ -711,11 +757,31 @@ export class C64Emulator {
         this.keyboardEnabled = true;
         document.addEventListener('keydown', event => this.handleKeyPress(event));
         document.addEventListener('keyup', event => this.handleKeyRelease(event));
-        this.canvas.addEventListener('blur', () => this.releaseAllKeys());
-        window.addEventListener('blur', () => this.releaseAllKeys());
+        this.canvas.addEventListener('blur', () => this.releaseAllInput());
+        window.addEventListener('blur', () => this.releaseAllInput());
+        this.canvas.addEventListener('focus', () => this.pollGamepad());
+        window.addEventListener('focus', () => this.pollGamepad());
+        window.addEventListener('gamepadconnected', () => this.pollGamepad());
+        window.addEventListener('gamepaddisconnected', () => this.pollGamepad());
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden) this.releaseAllKeys();
+            if (document.hidden) this.releaseAllInput();
+            else this.pollGamepad();
         });
+        this.canvas.addEventListener('pointermove', event => this.handleMouseMove(event));
+        this.canvas.addEventListener('pointerdown', event => this.handleMousePress(event));
+        window.addEventListener('pointerup', event => this.handleMouseRelease(event), true);
+        window.addEventListener('pointermove', event => {
+            if (event.pointerType === 'mouse' && typeof event.buttons === 'number') {
+                this.releaseMissingMouseButtons(event.buttons);
+            }
+        }, true);
+        window.addEventListener('pointercancel', event => {
+            if (event.pointerType === 'mouse') this.releaseMouse();
+        }, true);
+        this.canvas.addEventListener('contextmenu', event => {
+            if (this.mouseEnabled && this.inputCaptured()) event.preventDefault();
+        });
+        this.updateInputState();
     }
 
     handleKeyPress(e) {
@@ -884,24 +950,32 @@ export class C64Emulator {
         }
     }
 
-    // Sample once per display update, including while paused, so a disconnect
-    // releases input without starting another timer or advancing the machine.
+    setGamepadEnabled(enabled) {
+        enabled = Boolean(enabled);
+        if (enabled && !this.activeJoystick) this.setActiveJoystick(2);
+        this.gamepadEnabled = enabled;
+        if (enabled) this.gamepadDiscoveryStarted = true;
+        this.pollGamepad();
+    }
+
+    // Observe connection after the first opt-in, independently of capture.
+    // Poll once per display update, including while paused.
     pollGamepad() {
         let pads = [];
         let available = typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function';
-        if (available) {
+        if (this.gamepadDiscoveryStarted && available) {
             try {
                 pads = Array.from(navigator.getGamepads());
             } catch {
-                // A browser or embedding page can deny Gamepad API access.
                 available = false;
             }
         }
         const pad = pads.find(candidate => candidate?.connected && candidate.mapping === 'standard');
-        const captured = this.keyboardEnabled && this.running && !this.paused &&
-            !document.hidden && document.activeElement === this.canvas && document.hasFocus();
+        this.gamepadDevice = pad ?? null;
+        this.gamepadAvailable = available;
+        this.gamepadName = pad?.id ?? '';
         const buttons = new Set();
-        if (pad && captured && this.activeJoystick > 0) {
+        if (this.gamepadEnabled && pad && this.inputCaptured() && this.activeJoystick > 0) {
             const held = index => pad.buttons[index]?.pressed;
             const x = pad.axes[0] ?? 0, y = pad.axes[1] ?? 0;
             if (x < -GAMEPAD_DEAD_ZONE || held(14)) buttons.add('left');
@@ -911,20 +985,131 @@ export class C64Emulator {
             if ([0, 1, 2, 3].some(held)) buttons.add('fire');
         }
         this.setGamepadButtons(buttons);
+        if (!this.inputCaptured()) this.releaseMouse();
+        this.gamepadUnmapped = pads.some(candidate => candidate?.connected) && !pad;
+        this.updateInputState();
+    }
 
-        let message;
-        if (!available) message = 'Gamepad controls are unavailable in this browser.';
-        else if (!pad) message = pads.some(candidate => candidate?.connected)
-            ? 'This controller has no standard mapping. Use a standard gamepad.'
-            : 'Gamepad: press a button on your controller to connect.';
-        else if (!this.activeJoystick) message = 'Gamepad connected. Joystick mode is off.';
-        else if (this.paused) message = 'Gamepad connected. Resume to play.';
-        else if (!captured) message = 'Gamepad connected. Click the C64 screen to play.';
-        else message = `Gamepad active on joystick ${this.activeJoystick}. D-pad or left stick moves; any face button fires.`;
-        if (message !== this.gamepadStatus) {
-            this.gamepadStatus = message;
-            for (const listener of this.gamepadListeners) listener(message);
+    updateInputState() {
+        let connection, message;
+        if (!this.gamepadDiscoveryStarted) {
+            connection = 'off';
+            message = 'Gamepad capture is off.';
+        } else if (!this.gamepadAvailable) {
+            connection = 'unavailable';
+            message = 'Gamepad controls are unavailable in this browser.';
+        } else if (!this.gamepadDevice) {
+            connection = this.gamepadUnmapped ? 'unsupported' : 'waiting';
+            message = this.gamepadUnmapped
+                ? 'This controller has no standard mapping. Use a standard gamepad.'
+                : 'Waiting for a controller. Press a face button so this browser can detect it.';
+        } else {
+            connection = this.gamepadEnabled && this.inputCaptured() && this.activeJoystick ? 'active' : 'connected';
+            if (!this.gamepadEnabled) message = 'Controller connected. Capture is off.';
+            else if (!this.activeJoystick) message = 'Gamepad connected. Joystick mode is off.';
+            else if (this.paused) message = 'Gamepad connected. Resume to play.';
+            else if (!this.running) message = 'Gamepad connected. Start the C64 to play.';
+            else if (!this.inputCaptured()) message = 'Gamepad connected. Click the C64 screen to play.';
+            else message = `Gamepad active on joystick ${this.activeJoystick}. D-pad or left stick moves; any face button fires.`;
         }
+        this.gamepadConnection = connection;
+        this.gamepadStatus = message;
+        this.notifyInputChange();
+    }
+
+    setMouseEnabled(enabled) {
+        enabled = Boolean(enabled);
+        if (enabled !== this.mouseEnabled) {
+            this.releaseMouse();
+            this.mouseEnabled = enabled;
+            this.machine.setMouseEnabled(enabled);
+            if (enabled && this.activeJoystick === 1) this.setActiveJoystick(2);
+        }
+        this.updateInputState();
+    }
+
+    releaseMouse() {
+        this.mouseDeltaX = this.mouseDeltaY = 0;
+        for (const button of this.mouseButtons) this.machine.setMouseButton(button, false);
+        this.mouseButtons.clear();
+    }
+
+    releaseAllInput() {
+        this.releaseAllKeys();
+        this.releaseMouse();
+        this.updateInputState();
+    }
+
+    handleMouseMove(event) {
+        if (event.pointerType !== 'mouse' || !this.mouseEnabled || !this.inputCaptured()) return;
+        const rect = this.canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const dx = event.movementX * 384 / rect.width;
+        const dy = event.movementY * 272 / rect.height;
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        this.mouseDeltaX += dx;
+        this.mouseDeltaY += dy;
+        // A second mouse button in a chord changes buttons through pointermove,
+        // rather than delivering another pointerdown.
+        if (typeof event.buttons === 'number') {
+            this.setMouseButton('left', Boolean(event.buttons & 1));
+            this.setMouseButton('right', Boolean(event.buttons & 2));
+        }
+    }
+
+    setMouseButton(button, pressed) {
+        if (this.mouseButtons.has(button) === pressed) return;
+        if (pressed) this.mouseButtons.add(button);
+        else this.mouseButtons.delete(button);
+        this.machine.setMouseButton(button, pressed);
+    }
+
+    handleMousePress(event) {
+        if (event.pointerType !== 'mouse' || !this.mouseEnabled || !this.inputCaptured()) return;
+        const button = event.button === 0 ? 'left' : event.button === 2 ? 'right' : null;
+        if (!button) return;
+        this.setMouseButton(button, true);
+        event.preventDefault();
+    }
+
+    releaseMissingMouseButtons(buttons) {
+        let released = false;
+        for (const button of this.mouseButtons) {
+            const mask = button === 'left' ? 1 : 2;
+            if (!(buttons & mask)) {
+                this.setMouseButton(button, false);
+                released = true;
+            }
+        }
+        return released;
+    }
+
+    handleMouseRelease(event) {
+        if (event.pointerType !== 'mouse') return;
+        // The final button can have been pressed outside the canvas. Its up
+        // still proves that every button captured earlier is now released.
+        if (event.buttons === 0) {
+            if (this.releaseMissingMouseButtons(0)) event.preventDefault();
+            return;
+        }
+        const button = event.button === 0 ? 'left' : event.button === 2 ? 'right' : null;
+        if (!this.mouseButtons.has(button)) return;
+        this.setMouseButton(button, false);
+        event.preventDefault();
+    }
+
+    flushMouseMovement() {
+        if (!this.mouseEnabled || !this.inputCaptured()) {
+            this.releaseMouse();
+            return;
+        }
+        // Bound a burst between emulated frames to keep six-bit deltas unambiguous.
+        // Keep subpixel motion, but never replay a large stale movement later.
+        const dx = Math.max(-MOUSE_FRAME_DELTA, Math.min(MOUSE_FRAME_DELTA, Math.trunc(this.mouseDeltaX)));
+        const dy = Math.max(-MOUSE_FRAME_DELTA, Math.min(MOUSE_FRAME_DELTA, Math.trunc(this.mouseDeltaY)));
+        this.mouseDeltaX %= 1;
+        this.mouseDeltaY %= 1;
+        if (dx || dy) this.machine.moveMouse(dx, dy);
     }
 
     updateJoystickKey(key) {
@@ -938,8 +1123,11 @@ export class C64Emulator {
     // @param {number} port - Joystick port (1 or 2), or 0 to disable
     //
     setActiveJoystick(port) {
+        if (this.mouseEnabled && port === 1) port = 2;
+        if (port === this.activeJoystick) return;
         this.releaseAllKeys();
         this.activeJoystick = port;
+        this.updateInputState();
     }
 
     //

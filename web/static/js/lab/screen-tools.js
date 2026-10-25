@@ -21,6 +21,7 @@ import { rom_chars } from '../emulator/roms.js';
 import { PALETTE, MODE_STANDARD_BITMAP, MODE_MULTICOLOR_BITMAP, MODE_EXTENDED_BACKGROUND } from '../emulator/vic-ii.js';
 import { expandControlCodes } from '../emulator/basic-tokenizer.js';
 import { downloadBlob, storage } from './files.js';
+import { attachInputControls } from './input-controls.js';
 
 export const COLOR_NAMES = [
     'black', 'white', 'red', 'cyan', 'purple', 'green', 'blue', 'yellow',
@@ -120,15 +121,14 @@ export function inspectScreen(machine, x, y) {
 //
 // Wire up the screen toolbar, paste and inspector for one emulator.
 // @param {C64Emulator} emulator
-// @param {Object} elements - { frame, toolbar, inspector, status, gamepadStatus }
+// @param {Object} elements - { frame, toolbar, inspector, status }
 //
-export function attachScreenTools(emulator, { frame, toolbar, inspector, status, gamepadStatus }) {
+export function attachScreenTools(emulator, { frame, toolbar, inspector, status }) {
     const canvas = emulator.canvas;
-    if (gamepadStatus) {
-        gamepadStatus.textContent = emulator.gamepadStatus;
-        emulator.onGamepadChange(message => { gamepadStatus.textContent = message; });
-    }
     const button = action => toolbar?.querySelector(`[data-screen-action="${action}"]`);
+    const inputTrigger = button('inputs');
+    const inputControls = inputTrigger ? attachInputControls(emulator, { frame, trigger: inputTrigger }) : null;
+    const tools = { inputControls };
     const say = message => {
         if (status) status.textContent = message;
     };
@@ -225,7 +225,7 @@ export function attachScreenTools(emulator, { frame, toolbar, inspector, status,
     });
 
     // ---- Inspector ----
-    if (!inspector) return;
+    if (!inspector) return tools;
     inspector.replaceChildren();
     const glyphCanvas = document.createElement('canvas');
     glyphCanvas.width = 8;
@@ -344,4 +344,5 @@ export function attachScreenTools(emulator, { frame, toolbar, inspector, status,
         }
     });
     showIdle();
+    return tools;
 }

@@ -383,6 +383,241 @@ def test_sid_inspection_delegates_to_pure_device_view(machine_context):
     }
 
 
+# Commodore 1351 User's Manual, section 2.3 and Appendix A:
+# https://retroisle.com/commodore/c64128/OriginalDocs/1351mousev11.php
+# Nominal values omit the physical ADC conversion delay and low-bit noise.
+def test_mouse_attachment_is_optional_and_disabling_preserves_its_position(
+    machine_context,
+):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.write(0xDC02, 0xFF);
+            m.write(0xDC00, 0x40);
+            m.moveMouse(10, -20);
+            m.setMouseButton('left', true);
+            const initial = [m.mouseEnabled, m.read(0xD419), m.read(0xD41A), m.read(0xDC01)];
+            m.setMouseEnabled(true);
+            m.moveMouse(10, -20);
+            m.setMouseButton('left', true);
+            m.setMouseButton('right', true);
+            const attached = [m.read(0xD419), m.read(0xD41A), m.read(0xDC01)];
+            m.setMouseEnabled(false);
+            const detached = [m.read(0xD419), m.read(0xD41A), m.read(0xDC01)];
+            m.moveMouse(23, 24);
+            m.setMouseButton('right', true);
+            m.setMouseEnabled(true);
+            return {initial, attached, detached,
+                reattached: [m.read(0xD419), m.read(0xD41A), m.read(0xDC01)]};
+        })()""",
+    )
+    assert result == {
+        "initial": [False, 0xFF, 0xFF, 0xFF],
+        "attached": [0x54, 0x68, 0xEE],
+        "detached": [0xFF, 0xFF, 0xFF],
+        "reattached": [0x54, 0x68, 0xFF],
+    }
+
+
+def test_mouse_motion_wraps_both_axes_and_ignores_nonfinite_deltas(machine_context):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.setMouseEnabled(true);
+            const positions = [];
+            for (const [dx, dy] of [[0, 0], [63, -63], [1, -1], [-1, 1],
+                    [-64, 64], [130, -131], [-133, 134], [2.9, -3.9], [-2.9, 3.9]]) {
+                m.moveMouse(dx, dy);
+                positions.push([m.read(0xD419), m.read(0xD41A)]);
+            }
+            for (const [dx, dy] of [[NaN, 1], [1, Infinity], [-Infinity, 0]]) {
+                m.moveMouse(dx, dy);
+                positions.push([m.read(0xD419), m.read(0xD41A)]);
+            }
+            return positions;
+        })()""",
+    )
+    assert result == [
+        [0x40, 0x40],
+        [0xBE, 0xBE],
+        [0x40, 0x40],
+        [0xBE, 0xBE],
+        [0xBE, 0xBE],
+        [0x42, 0x44],
+        [0xB8, 0xB8],
+        [0xBC, 0xBE],
+        [0xB8, 0xB8],
+        [0xB8, 0xB8],
+        [0xB8, 0xB8],
+        [0xB8, 0xB8],
+    ]
+
+
+def test_mouse_pot_selection_uses_effective_cia_output_pins(machine_context):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.setMouseEnabled(true);
+            m.moveMouse(10, 20);
+            return [[0xFF, 0], [0xFF, 0x40], [0xFF, 0x80], [0xFF, 0xC0],
+                    [0xBF, 0], [0x7F, 0], [0, 0]].map(([ddr, latch]) => {
+                m.write(0xDC02, ddr);
+                m.write(0xDC00, latch);
+                return [m.read(0xD419), m.peek(0xD41A)];
+            });
+        })()""",
+    )
+    assert result == [
+        [0xFF, 0xFF],
+        [0x54, 0x98],
+        [0xFF, 0xFF],
+        [0x54, 0x98],
+        [0x54, 0x98],
+        [0xFF, 0xFF],
+        [0x54, 0x98],
+    ]
+
+
+def test_mouse_pot_peeks_are_pure_and_cpu_reads_refresh_the_sid_bus(machine_context):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.setMouseEnabled(true);
+            m.moveMouse(5, -9);
+            m.sid.busValue = 0x77;
+            m.sid.busValueTtl = 123;
+            const peeks = [m.peek(0xD419), m.peekIO(0xD43A), m.peek(0xD439)];
+            const pureBus = [m.sid.busValue, m.sid.busValueTtl];
+            const read = m.read(0xD439);
+            const refreshed = m.sid.busValueTtl === m.sid.modelTTL;
+            const floating = m.read(0xD400);
+            m.loadCode([0x31], 0xD419);
+            m.write(1, 0x30);
+            const banked = [m.read(0xD419), m.peek(0xD419), m.peekIO(0xD419)];
+            m.write(1, 0x37);
+            m.write(0xDC02, 0xFF);
+            m.write(0xDC00, 0x80);
+            const unselected = m.read(0xD419);
+            return {peeks, pureBus, read, refreshed, floating, banked,
+                unselected, unselectedBus: m.sid.busValue};
+        })()""",
+    )
+    assert result == {
+        "peeks": [0x4A, 0x52, 0x4A],
+        "pureBus": [0x77, 123],
+        "read": 0x4A,
+        "refreshed": True,
+        "floating": 0x4A,
+        "banked": [0x31, 0x31, 0x4A],
+        "unselected": 0xFF,
+        "unselectedBus": 0xFF,
+    }
+
+
+def test_mouse_buttons_combine_with_keyboard_and_joystick_without_releasing_them(
+    machine_context,
+):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.setMouseEnabled(true);
+            m.write(0xDC02, 0xFF);
+            m.write(0xDC00, 0xFF);
+            const buttons = [];
+            for (const [left, right] of [[true, false], [true, true], [false, true], [false, false]]) {
+                m.setMouseButton('left', left);
+                m.setMouseButton('right', right);
+                buttons.push(m.read(0xDC01));
+            }
+            m.setKey(1, 2, true);
+            m.write(0xDC00, 0xFD);
+            m.setJoystickButton(1, 'fire', true);
+            m.setMouseButton('left', true);
+            m.setMouseButton('right', true);
+            const combined = m.read(0xDC01);
+            m.setMouseButton('left', false);
+            const joystickHeld = m.read(0xDC01);
+            m.setJoystickButton(1, 'fire', false);
+            const mouseHeld = m.read(0xDC01);
+            m.setMouseButton('right', false);
+            const keyboardHeld = m.read(0xDC01);
+            m.setJoystickButton(1, 'fire', true);
+            m.setMouseButton('left', true);
+            m.setMouseEnabled(false);
+            return {buttons, combined, joystickHeld, mouseHeld, keyboardHeld,
+                disabled: m.read(0xDC01), joystick: m.joystick1,
+                key: m.keyboardMatrix[1]};
+        })()""",
+    )
+    assert result == {
+        "buttons": [0xEF, 0xEE, 0xFE, 0xFF],
+        "combined": 0xEA,
+        "joystickHeld": 0xEA,
+        "mouseHeld": 0xFA,
+        "keyboardHeld": 0xFB,
+        "disabled": 0xEB,
+        "joystick": 0xEF,
+        "key": 0xFB,
+    }
+
+
+def test_mouse_buttons_pull_reverse_keyboard_scan_lines_low(machine_context):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.setMouseEnabled(true);
+            m.write(0xDC02, 0);
+            m.write(0xDC03, 0);
+            m.setKey(1, 4, true);
+            const read = () => m.read(0xDC00);
+            const released = read();
+            m.setMouseButton('left', true);
+            const pressed = read();
+            m.setJoystickButton(1, 'fire', true);
+            m.setMouseButton('left', false);
+            const joystickHeld = read();
+            m.setJoystickButton(1, 'fire', false);
+            return {released, pressed, joystickHeld, restored: read()};
+        })()""",
+    )
+    assert result == {
+        "released": 0xFF,
+        "pressed": 0xFD,
+        "joystickHeld": 0xFD,
+        "restored": 0xFF,
+    }
+
+
+def test_mouse_reset_keeps_the_attachment_and_clears_position_and_buttons(
+    machine_context,
+):
+    result = eval_json(
+        machine_context,
+        """(() => {
+            const m = regressionMachine();
+            m.setMouseEnabled(true);
+            m.moveMouse(13, -17);
+            m.setMouseButton('left', true);
+            m.setMouseButton('right', true);
+            m.reset();
+            const enabled = [m.mouseEnabled, m.read(0xD419), m.read(0xD41A), m.read(0xDC01)];
+            m.setMouseEnabled(false);
+            m.reset();
+            return {enabled, disabled: [m.mouseEnabled, m.read(0xD419), m.read(0xD41A)]};
+        })()""",
+    )
+    assert result == {
+        "enabled": [True, 0x40, 0x40, 0xFF],
+        "disabled": [False, 0xFF, 0xFF],
+    }
+
+
 # Columns are $8000, $A000, $D000, $E000; rows are $01 bits CHAREN/HIRAM/LORAM.
 # R=RAM, B=BASIC, C=character ROM, I=I/O, K=KERNAL, L/H=cartridge ROM, O=open bus.
 # https://www.c64-wiki.com/wiki/Bank_Switching#Mode_Table

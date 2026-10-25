@@ -174,6 +174,11 @@ export class C64Machine {
         this.joystick1 = 0xFF;  // Joystick 1 (read via CIA1 Port B $DC01)
         this.joystick2 = 0xFF;  // Joystick 2 (read via CIA1 Port A $DC00)
 
+        this.mouseEnabled = false;
+        this.mouseX = 0;
+        this.mouseY = 0;
+        this.mouseButtons = 0xFF;
+
         // Audio state
         this.audioEnabled = options.audioEnabled !== false;
         this.cycleAccumulator = 0;
@@ -220,6 +225,9 @@ export class C64Machine {
         this.io.fill(0);
         this.sid.reset();
         this.keyboardMatrix.fill(0xFF);
+        this.mouseX = 0;
+        this.mouseY = 0;
+        this.mouseButtons = 0xFF;
         this.audioSamplesGenerated = 0;
         this.frameCycleStart = 0;
 
@@ -510,7 +518,24 @@ export class C64Machine {
     readIO(addr, sideEffects = true) {
         if (addr < 0xD000 || addr > 0xDFFF) throw new RangeError('I/O address out of range');
         if (addr < 0xD400) return this.readVIC(addr, sideEffects);
-        if (addr < 0xD800) return sideEffects ? this.sid.read(addr & 0x1F) : this.sid.peek(addr & 0x1F);
+        if (addr < 0xD800) {
+            const reg = addr & 0x1F;
+            if (reg === 0x19 || reg === 0x1A) {
+                const portA = this.io[0xC00] | ~this.io[0xC02];
+                const counter = reg === 0x19 ? this.mouseX : this.mouseY;
+                // Nominal 1351 position encoding, without ADC delay or noise.
+                // Port 2 has no analog attachment; selecting both leaves the
+                // port 1 mouse as the only source on the SID's POT inputs.
+                const value = this.mouseEnabled && (portA & 0x40)
+                    ? 0x40 + ((counter & 0x3F) << 1) : 0xFF;
+                if (sideEffects) {
+                    this.sid.read(reg);
+                    this.sid.busValue = value;
+                }
+                return value;
+            }
+            return sideEffects ? this.sid.read(reg) : this.sid.peek(reg);
+        }
         if (addr < 0xDC00) return this.io[addr & 0xFFF] & 0x0F;
         if (addr < 0xDD00) return this.readCIA1(addr, sideEffects);
         if (addr < 0xDE00) return this.readCIA2(addr, sideEffects);
@@ -668,7 +693,8 @@ export class C64Machine {
                 // Pins configured as inputs float high, output pins read their
                 // latch; either way a grounded switch pulls the line low.
                 const paOut = this.io[0xC00] | ~this.io[0xC02];
-                const pbOut = this.io[0xC01] | ~this.io[0xC03];
+                const pbOut = (this.io[0xC01] | ~this.io[0xC03]) & this.joystick1 &
+                    (this.mouseEnabled ? this.mouseButtons : 0xFF);
                 let value = paOut & this.joystick2;
 
                 // Reverse scan: a column driven low on port B pulls every row
@@ -687,7 +713,8 @@ export class C64Machine {
             case 0x01: {
                 // Port B - keyboard column read (input) / Joystick 1
                 const paOut = this.io[0xC00] | ~this.io[0xC02];
-                let value = (this.io[0xC01] | ~this.io[0xC03]) & this.joystick1;
+                let value = (this.io[0xC01] | ~this.io[0xC03]) & this.joystick1 &
+                    (this.mouseEnabled ? this.mouseButtons : 0xFF);
 
                 for (let row = 0; row < 8; row++) {
                     if (paOut & (1 << row)) continue;  // row not selected
@@ -1079,6 +1106,26 @@ export class C64Machine {
     pressStop() {
         this.setKey(7, 7, true);
         setTimeout(() => this.setKey(7, 7, false), 150);
+    }
+
+    // Optional proportional 1351 on port 1. Unplugging releases its buttons
+    // without changing its position counters or the other input sources.
+    setMouseEnabled(enabled) {
+        this.mouseEnabled = !!enabled;
+        if (!this.mouseEnabled) this.mouseButtons = 0xFF;
+    }
+
+    moveMouse(dx, dy) {
+        if (!this.mouseEnabled || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        this.mouseX = (this.mouseX + Math.trunc(dx)) & 0x3F;
+        this.mouseY = (this.mouseY - Math.trunc(dy)) & 0x3F;
+    }
+
+    setMouseButton(button, pressed) {
+        if (!this.mouseEnabled) return;
+        const mask = button === 'left' ? 0x10 : button === 'right' ? 0x01 : 0;
+        if (pressed) this.mouseButtons &= ~mask;
+        else this.mouseButtons |= mask;
     }
 
     //

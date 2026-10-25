@@ -16,8 +16,7 @@ from tests.test_utils import (
 @pytest.fixture
 def emulator_ui():
     ctx = create_mini_racer_context()
-    ctx.eval(
-        """
+    ctx.eval("""
         var ChipModel = { MOS6581: 0 };
         var SamplingMethod = { DECIMATE: 0 };
         var C64Machine = class {
@@ -29,6 +28,9 @@ def emulator_ui():
                 this.keys = new Set();
                 this.joystick = new Set();
                 this.typed = [];
+                this.mouseEnabled = false;
+                this.mouseButtons = new Set();
+                this.mouseMoves = [];
                 this.audioSamplesGenerated = 0;
                 this.ram = new Uint8Array(65536);
             }
@@ -41,6 +43,16 @@ def emulator_ui():
                 const key = port + ',' + button;
                 if (pressed) this.joystick.add(key);
                 else this.joystick.delete(key);
+            }
+            setMouseEnabled(enabled) {
+                this.mouseEnabled = enabled;
+                if (!enabled) this.mouseButtons.clear();
+            }
+            moveMouse(dx, dy) { this.mouseMoves.push([dx, dy]); }
+            setMouseButton(button, pressed) {
+                if (!this.mouseEnabled) return;
+                if (pressed) this.mouseButtons.add(button);
+                else this.mouseButtons.delete(button);
             }
             releaseAllKeys() { this.keys.clear(); }
             ejectCartridge() {}
@@ -57,8 +69,8 @@ def emulator_ui():
             if (!listeners.has(type)) listeners.set(type, []);
             listeners.get(type).push(callback);
         }
-        function dispatch(listeners, type) {
-            for (const callback of listeners.get(type) || []) callback();
+        function dispatch(listeners, type, event = {}) {
+            for (const callback of listeners.get(type) || []) callback(event);
         }
         window.addEventListener = (type, callback) =>
             addListener(windowListeners, type, callback);
@@ -67,7 +79,9 @@ def emulator_ui():
             addEventListener(type, callback) {
                 addListener(canvasListeners, type, callback);
             },
-            closest() { return null; }
+            closest() { return null; },
+            getBoundingClientRect() { return { width: 384, height: 272 }; },
+            focus() { document.activeElement = canvas; }
         };
         var pageFocused = true;
         var document = {
@@ -93,9 +107,11 @@ def emulator_ui():
         function activateGamepad(port = 2) {
             emulator.enableKeyboard();
             emulator.running = true;
+            document.activeElement = canvas;
             emulator.setActiveJoystick(port);
             const pad = standardGamepad();
             gamepads = [pad];
+            emulator.setGamepadEnabled(true);
             return pad;
         }
         var audioContexts = [];
@@ -142,8 +158,7 @@ def emulator_ui():
             emulator.machine.ram.set([1, 8, 3, 8], 0x2b);
             emulator.machine.ram.set([18, 5, 1, 4, 25, 46], 0x400);
         }
-        """
-    )
+        """)
     source = re.sub(
         r"^import\s+[\s\S]*?from\s+['\"][^'\"]+['\"];",
         "",
@@ -580,20 +595,130 @@ def test_unavailable_gamepad_api_releases_input_and_keeps_the_loop_alive(
     assert ctx.eval("emulator.frame") == 1
 
 
-def test_gamepad_status_notifies_observers_only_when_it_changes(emulator_ui):
+def test_input_snapshots_notify_only_when_state_changes_and_preserve_status_text(
+    emulator_ui,
+):
     ctx = emulator_ui
     ctx.eval("""
-        var pad = activateGamepad();
         var statuses = [];
-        emulator.onGamepadChange(message => statuses.push(message));
+        emulator.onInputChange(state => statuses.push(state));
+        emulator.enableKeyboard();
+        emulator.running = true;
+        emulator.setGamepadEnabled(true);
         emulator.pollGamepad();
         emulator.pollGamepad();
         """)
     assert ctx.eval("statuses.length") == 1
-    assert ctx.eval("typeof statuses[0]") == "string"
-    ctx.eval("gamepads = []; emulator.pollGamepad(); emulator.pollGamepad();")
+    assert ctx.eval("typeof statuses[0].gamepad.status") == "string"
+    assert ctx.eval("emulator.gamepadConnection") == "waiting"
+    ctx.eval("""
+        gamepads = [standardGamepad([-1, 0])];
+        emulator.pollGamepad();
+        emulator.pollGamepad();
+        """)
     assert ctx.eval("statuses.length") == 2
-    assert ctx.eval("statuses[0] !== statuses[1]")
+    assert ctx.eval("emulator.gamepadConnection") == "active"
+    assert ctx.eval("emulator.machine.joystick.has('2,left')")
+    assert ctx.eval("statuses[0].gamepad.status !== statuses[1].gamepad.status")
+    ctx.eval("gamepads = []; emulator.pollGamepad(); emulator.pollGamepad();")
+    assert ctx.eval("statuses.length") == 3
+    assert ctx.eval("emulator.gamepadConnection") == "waiting"
+    ctx.eval("emulator.setGamepadEnabled(false); emulator.setGamepadEnabled(false);")
+    assert ctx.eval("statuses.length") == 4
+    assert ctx.eval("statuses[2].gamepad.status === statuses[3].gamepad.status")
+    assert ctx.eval("statuses[2].gamepad.enabled && !statuses[3].gamepad.enabled")
+    assert ctx.eval("emulator.gamepadConnection") == "waiting"
+
+
+def test_gamepad_api_is_not_queried_until_controls_are_enabled(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var queries = 0;
+        navigator.getGamepads = () => {
+            queries++;
+            return [standardGamepad([1, 0])];
+        };
+        emulator.enableKeyboard();
+        emulator.running = true;
+        emulator.setActiveJoystick(2);
+        emulator.pollGamepad();
+        emulator.lastTime = -25;
+        emulator.loop();
+        """)
+    assert ctx.eval("emulator.gamepadEnabled") is False
+    assert ctx.eval("emulator.gamepadConnection") == "off"
+    assert ctx.eval("queries") == 0
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+@pytest.mark.parametrize(("selected", "expected"), [(0, 2), (1, 1), (2, 2)])
+def test_enabling_gamepad_polls_immediately_and_uses_the_selected_port(
+    emulator_ui, selected, expected
+):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        emulator.enableKeyboard();
+        emulator.running = true;
+        emulator.setActiveJoystick({selected});
+        var queries = 0;
+        navigator.getGamepads = () => {{
+            queries++;
+            return [standardGamepad([1, 0])];
+        }};
+        emulator.setGamepadEnabled(true);
+        """)
+    assert ctx.eval("emulator.gamepadEnabled") is True
+    assert ctx.eval("emulator.activeJoystick") == expected
+    assert ctx.eval("queries") == 1
+    assert ctx.eval("emulator.gamepadConnection") == "active"
+    assert ctx.eval(f"emulator.machine.joystick.has('{expected},right')")
+
+
+def test_disabling_gamepad_releases_only_controller_input(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [1, -1];
+        emulator.pollGamepad();
+        emulator.handleKeyPress(keyEvent('ArrowRight', 'ArrowRight'));
+        emulator.setGamepadEnabled(false);
+        """)
+    assert ctx.eval("emulator.gamepadEnabled") is False
+    assert ctx.eval("emulator.gamepadConnection") == "connected"
+    assert ctx.eval("emulator.gamepadState.size") == 0
+    assert not ctx.eval("emulator.machine.joystick.has('2,up')")
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert ctx.eval("emulator.activeJoystick") == 2
+    ctx.eval("emulator.pollGamepad();")
+    assert not ctx.eval("emulator.machine.joystick.has('2,up')")
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+
+
+@pytest.mark.parametrize(
+    ("setup", "connection"),
+    [
+        ("gamepads = []", "waiting"),
+        ("document.activeElement = {}", "connected"),
+        ("gamepads[0].mapping = ''", "unsupported"),
+        ("delete navigator.getGamepads", "unavailable"),
+        (
+            "navigator.getGamepads = () => { throw new Error('SecurityError'); }",
+            "unavailable",
+        ),
+    ],
+)
+def test_gamepad_connection_reports_detection_and_capture_state(
+    emulator_ui, setup, connection
+):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        activateGamepad();
+        {setup};
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.gamepadConnection") == connection
+    assert ctx.eval("typeof emulator.gamepadStatus") == "string"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
 
 
 @pytest.mark.parametrize(
@@ -834,3 +959,281 @@ def test_ctrl_v_is_left_to_the_browser_for_pasting(emulator_ui):
     )
     assert not ctx.eval("paste.defaultPrevented")
     assert ctx.eval("emulator.machine.keys.size") == 0
+
+
+# Mouse deltas are observed at complete emulated frames, independently of display
+# refreshes. Button and lifecycle checks use the wrapper's real event listeners.
+def activate_mouse(ctx):
+    ctx.eval("""
+        emulator.enableKeyboard();
+        emulator.running = true;
+        document.activeElement = canvas;
+        emulator.setMouseEnabled(true);
+        function mouseEvent(button = 0, movementX = 0, movementY = 0) {
+            return { pointerType: 'mouse', button, movementX, movementY,
+                defaultPrevented: false,
+                preventDefault() { this.defaultPrevented = true; } };
+        }
+        """)
+
+
+def test_input_observer_is_changes_only_and_snapshots_do_not_mutate_the_core(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval("""
+        var changes = [];
+        var unsubscribe = emulator.onInputChange(state => changes.push(state));
+        var initial = emulator.getInputState();
+        initial.gamepad.enabled = true;
+        initial.mouse.enabled = true;
+        """)
+    assert ctx.eval("changes.length") == 0
+    assert not ctx.eval("emulator.getInputState().gamepad.enabled")
+    assert not ctx.eval("emulator.getInputState().mouse.enabled")
+    ctx.eval("emulator.setMouseEnabled(true); emulator.setMouseEnabled(true);")
+    assert ctx.eval("changes.length") == 1
+    assert ctx.eval("changes[0].mouse.enabled")
+    ctx.eval("unsubscribe(); emulator.setMouseEnabled(false);")
+    assert ctx.eval("changes.length") == 1
+
+
+def test_gamepad_discovery_continues_after_capture_is_disabled_and_names_notify(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.id = 'First controller';
+        pad.axes = [1, 0];
+        emulator.pollGamepad();
+        emulator.setGamepadEnabled(false);
+        var changes = [];
+        var oldStatus = emulator.getInputState().gamepad.status;
+        emulator.onInputChange(state => changes.push(state));
+        pad.id = 'Second controller';
+        emulator.pollGamepad();
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "Second controller"
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert not ctx.eval("emulator.getInputState().gamepad.enabled")
+    assert "Capture is off" in ctx.eval("emulator.getInputState().gamepad.status")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("changes.length") == 1
+    assert ctx.eval("changes[0].gamepad.status === oldStatus")
+    ctx.eval("gamepads = []; dispatch(windowListeners, 'gamepaddisconnected');")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "waiting"
+
+
+def test_device_setters_do_not_move_focus_or_capture_from_page_controls(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        emulator.enableKeyboard(); emulator.running = true;
+        var control = {}; document.activeElement = control;
+        gamepads = [standardGamepad([1, 0])];
+        emulator.setGamepadEnabled(true); emulator.setMouseEnabled(true);
+        """)
+    assert ctx.eval("document.activeElement === control")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert not ctx.eval("emulator.getInputState().mouse.captured")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("canvas.focus(); dispatch(canvasListeners, 'focus');")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+    assert ctx.eval("emulator.getInputState().mouse.captured")
+
+
+def test_mouse_scales_relative_motion_and_accumulates_fractional_pixels(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        canvas.getBoundingClientRect = () => ({ width: 768, height: 544 });
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 1, -1));
+        emulator.runOneFrame();
+        """)
+    assert ctx.eval("emulator.machine.mouseMoves.length") == 0
+    ctx.eval("""
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 1, -1));
+        emulator.runOneFrame();
+        """)
+    assert ctx.eval("JSON.stringify(emulator.machine.mouseMoves)") == "[[1,-1]]"
+
+
+def test_mouse_bursts_are_bounded_per_emulated_frame_without_stale_replay(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 1000, -1000));
+        emulator.turbo = true; emulator.lastTime = -25; emulator.loop();
+        """)
+    assert ctx.eval("emulator.frame") == 40
+    assert ctx.eval("JSON.stringify(emulator.machine.mouseMoves)") == "[[24,-24]]"
+
+
+def test_mouse_left_right_chord_and_release_outside_canvas(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        var press = mouseEvent();
+        dispatch(canvasListeners, 'pointerdown', press);
+        var chord = mouseEvent(); chord.buttons = 3;
+        dispatch(canvasListeners, 'pointermove', chord);
+        """)
+    assert ctx.eval("press.defaultPrevented")
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 2
+    ctx.eval("""
+        var rightOnly = mouseEvent(); rightOnly.buttons = 2;
+        dispatch(canvasListeners, 'pointermove', rightOnly);
+        var release = mouseEvent(2); release.buttons = 0;
+        dispatch(windowListeners, 'pointerup', release);
+        """)
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
+    assert ctx.eval("release.defaultPrevented")
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "document.activeElement = {}; dispatch(canvasListeners, 'blur')",
+        "pageFocused = false; dispatch(windowListeners, 'blur')",
+        "document.hidden = true; dispatch(documentListeners, 'visibilitychange')",
+        "emulator.pause()",
+        "emulator.reset()",
+        "emulator.stop()",
+        "emulator.setMouseEnabled(false)",
+        "dispatch(windowListeners, 'pointercancel', mouseEvent())",
+    ],
+)
+def test_mouse_lifecycle_releases_buttons_and_discards_queued_motion(
+    emulator_ui, action
+):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval(f"""
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 12, 9));
+        {action};
+        """)
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
+    assert ctx.eval("emulator.mouseButtons.size") == 0
+    assert ctx.eval("emulator.mouseDeltaX === 0 && emulator.mouseDeltaY === 0")
+
+
+@pytest.mark.parametrize(
+    "inactive",
+    [
+        "emulator.keyboardEnabled = false",
+        "emulator.running = false",
+        "emulator.paused = true",
+        "document.hidden = true",
+        "pageFocused = false",
+        "document.activeElement = {}",
+    ],
+)
+def test_mouse_capture_requires_the_active_screen_and_stays_released(
+    emulator_ui, inactive
+):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval(f"""
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 3, 4));
+        {inactive}; emulator.pollGamepad();
+        var press = mouseEvent();
+        dispatch(canvasListeners, 'pointerdown', press);
+        """)
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
+    assert ctx.eval("emulator.mouseDeltaX === 0 && emulator.mouseDeltaY === 0")
+    assert not ctx.eval("press.defaultPrevented")
+    assert not ctx.eval("emulator.getInputState().mouse.captured")
+
+
+def test_mouse_ignores_touch_invalid_motion_and_uncaptured_context_menus(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        var touch = mouseEvent(0, 5, 7); touch.pointerType = 'touch';
+        dispatch(canvasListeners, 'pointerdown', touch);
+        dispatch(canvasListeners, 'pointermove', touch);
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, NaN, Infinity));
+        emulator.runOneFrame();
+        var capturedMenu = mouseEvent(2);
+        dispatch(canvasListeners, 'contextmenu', capturedMenu);
+        document.activeElement = {};
+        var nativeMenu = mouseEvent(2);
+        dispatch(canvasListeners, 'contextmenu', nativeMenu);
+        """)
+    assert ctx.eval("emulator.machine.mouseMoves.length") == 0
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
+    assert not ctx.eval("touch.defaultPrevented")
+    assert ctx.eval("capturedMenu.defaultPrevented")
+    assert not ctx.eval("nativeMenu.defaultPrevented")
+
+
+def test_mouse_port_guard_and_disabling_preserve_port_two_input(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad(1); pad.axes = [1, 0];
+        emulator.pollGamepad(); emulator.setMouseEnabled(true);
+        """)
+    assert ctx.eval("emulator.activeJoystick") == 2
+    assert not ctx.eval("emulator.machine.joystick.has('1,right')")
+    ctx.eval("""
+        emulator.pollGamepad();
+        emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
+        emulator.setActiveJoystick(1);
+        emulator.setMouseEnabled(false);
+        """)
+    assert ctx.eval("emulator.activeJoystick") == 2
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert ctx.eval("emulator.machine.joystick.has('2,up')")
+    assert ctx.eval("emulator.gamepadEnabled")
+
+
+@pytest.mark.parametrize("final_button", [1, 2])
+def test_last_untracked_button_release_clears_mouse_buttons_captured_earlier(
+    emulator_ui, final_button
+):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval(f"""
+        dispatch(canvasListeners, 'pointerdown', mouseEvent(0));
+        var finalRelease = mouseEvent({final_button}); finalRelease.buttons = 0;
+        dispatch(windowListeners, 'pointerup', finalRelease);
+        """)
+    assert ctx.eval("emulator.mouseButtons.size") == 0
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
+    assert ctx.eval("finalRelease.defaultPrevented")
+
+
+def test_outside_chord_changes_release_owned_buttons_without_capturing_new_ones(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        dispatch(canvasListeners, 'pointerdown', mouseEvent(0));
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 5, 7));
+        var outsideChord = mouseEvent(); outsideChord.buttons = 3;
+        dispatch(windowListeners, 'pointermove', outsideChord);
+        """)
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    assert not ctx.eval("emulator.machine.mouseButtons.has('right')")
+    ctx.eval("""
+        outsideChord.buttons = 2;
+        dispatch(windowListeners, 'pointermove', outsideChord);
+        """)
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
+    assert not ctx.eval("outsideChord.defaultPrevented")
+    ctx.eval("emulator.runOneFrame();")
+    assert ctx.eval("JSON.stringify(emulator.machine.mouseMoves)") == "[[5,7]]"
+
+
+def test_unowned_mouse_release_keeps_the_native_event_untouched(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        var release = mouseEvent(2); release.buttons = 0;
+        dispatch(windowListeners, 'pointerup', release);
+        """)
+    assert not ctx.eval("release.defaultPrevented")

@@ -206,7 +206,6 @@ attachScreenTools(emulator, {
     frame: document.getElementById('screenFrame'),
     toolbar: document.getElementById('screenToolbar'),
     inspector: document.getElementById('screenInspector'),
-    gamepadStatus: document.getElementById('gamepadStatus'),
     status: emulatorStatus
 });
 
@@ -503,27 +502,22 @@ function loadBasicProgram(result) {
 }
 window.loadBasicProgram = loadBasicProgram;
 
-function toggleJoystick(port) {
-    const isActive = emulator.toggleJoystick(port);
-    
-    // Update button styles
+function updateJoystickControls() {
+    const port = emulator.activeJoystick;
     const joy1Btn = document.getElementById('joy1Btn');
     const joy2Btn = document.getElementById('joy2Btn');
-    
-    joy1Btn.classList.remove('active');
-    joy2Btn.classList.remove('active');
-    joy1Btn.setAttribute('aria-pressed', String(isActive && port === 1));
-    joy2Btn.setAttribute('aria-pressed', String(isActive && port === 2));
-    
-    if (isActive) {
-        if (port === 1) {
-            joy1Btn.classList.add('active');
-        } else {
-            joy2Btn.classList.add('active');
-        }
-        emulator.canvas.focus({ preventScroll: true });
-    }
+    joy1Btn.classList.toggle('active', port === 1);
+    joy2Btn.classList.toggle('active', port === 2);
+    joy1Btn.setAttribute('aria-pressed', String(port === 1));
+    joy2Btn.setAttribute('aria-pressed', String(port === 2));
 }
+
+function toggleJoystick(port) {
+    emulator.toggleJoystick(port);
+    updateJoystickControls();
+    if (emulator.activeJoystick) emulator.canvas.focus({ preventScroll: true });
+}
+emulator.onInputChange(updateJoystickControls);
 window.toggleJoystick = toggleJoystick;
 
 window.addEventListener('load', () => {
