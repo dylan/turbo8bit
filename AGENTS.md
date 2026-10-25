@@ -26,7 +26,7 @@ Fonts. Keep it that way.
 
 ```powershell
 .\dd.ps1 run             # dev server on http://localhost:8082
-.\dd.ps1 test            # pytest; baseline is 840 passed, 25 skipped, 0 failed
+.\dd.ps1 test            # pytest; baseline is 878 passed, 25 skipped, 0 failed
 .\dd.ps1 format          # Black (-Check to report without rewriting)
 .\dd.ps1 deploy          # App Engine (project is hard-pinned inside dd.ps1)
 .\dd.ps1 gen             # regenerate logo + favicons + OG image + BASIC sample previews
@@ -34,7 +34,7 @@ Fonts. Keep it that way.
 ```
 
 The 25 skips are cartridge tests whose CRT dumps are not in the repo. The suite
-collects 865 cases. Investigate unexpected drops in collection, and update this
+collects 903 cases. Investigate unexpected drops in collection, and update this
 baseline when adding tests.
 
 ## Layout
@@ -146,15 +146,19 @@ in turbo mode. Releasing either source must preserve the other's held buttons.
 Connection/capture feedback uses `onInputChange`, separate from pause/turbo
 state listeners.
 
-**Direct Pro Controller input is optional and read-only.** Only an explicit
-`connectGamepadHid()` call may open the native chooser. The adapter is restricted
-to Nintendo 057e:2009, decodes verified 0x21/0x30 report prefixes, and sends no
-output or calibration commands. Native standard Gamepad snapshots take priority.
-Open and ready are distinct: no input forwards before a supported report.
-Connect/disconnect/cancel never change capture flags or port selection. Pending
-operation generations and device ownership prevent late completion from closing
-or detaching a newer connection. Chooser completion restores UI focus only if
-the user has not moved elsewhere, closed the dock or changed devices.
+**Direct HID gamepad input is optional and read-only.** Only an explicit
+`connectGamepadHid()` call may open the native chooser. Filter by Generic Desktop
+gamepad/joystick usage, without a vendor/product restriction. Decode absolute
+axes, hat/d-pad and button usages from the top-level flattened input reports;
+never traverse their children again or assume vendor bytes have a standard
+layout. Reject ambiguous or unsupported descriptors before opening. Verified
+vendor profiles stay internal. Send no output or calibration commands. Native
+standard Gamepad snapshots take priority. Open and ready are distinct: no input
+forwards before supported reports for all mapped controls. Connect/disconnect/
+cancel never change capture flags or port selection. Pending operation generations
+and device ownership prevent late completion from closing or detaching a newer
+connection. Chooser completion restores UI focus only if the user has not moved
+elsewhere, closed the dock or changed devices.
 
 **Mouse and joystick sources may overlap.** The optional 1351 mouse is on
 port 1. Enabling it must not change the selected joystick port or release another

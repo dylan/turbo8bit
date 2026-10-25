@@ -28,7 +28,7 @@
 import { C64Machine } from './machine.js';
 import { ChipModel, SamplingMethod } from './sid.js';
 import { VICIIRenderer } from './vic-ii.js';
-import { ProControllerInput } from './pro-controller.js';
+import { HidGamepadInput } from './gamepad-hid.js';
 
 // Ring buffer between the emulation loop and the Web Audio callback. Both run
 // on the main thread, but at unrelated rates (50Hz frames vs 2048-sample
@@ -975,7 +975,7 @@ export class C64Emulator {
     async connectGamepadHid() {
         this.startGamepadDiscovery();
         if (!this.gamepadHidInput) {
-            this.gamepadHidInput = new ProControllerInput(() => this.pollGamepad());
+            this.gamepadHidInput = new HidGamepadInput(() => this.pollGamepad());
         }
         try {
             return await this.gamepadHidInput.connect();
@@ -1046,14 +1046,19 @@ export class C64Emulator {
         } else {
             connection = this.gamepadEnabled && this.gamepadReady && this.inputCaptured() && this.activeJoystick ? 'active' : 'connected';
             if (!this.gamepadReady) {
-                message = 'Pro Controller connected. Waiting for controller input.';
+                message = 'Controller connection open. Waiting for controller input.';
                 if (!this.gamepadEnabled) message += ' Capture is off.';
             } else if (!this.gamepadEnabled) message = 'Controller connected. Capture is off.';
             else if (!this.activeJoystick) message = 'Gamepad connected. Joystick mode is off.';
             else if (this.paused) message = 'Gamepad connected. Resume to play.';
             else if (!this.running) message = 'Gamepad connected. Start the C64 to play.';
             else if (!this.inputCaptured()) message = 'Gamepad connected. Click the C64 screen to play.';
-            else message = `Gamepad active on joystick ${this.activeJoystick}. D-pad or left stick moves; any face button fires.`;
+            else {
+                const controls = this.gamepadTransport === 'hid'
+                    ? 'D-pad or stick moves; the first four buttons fire.'
+                    : 'D-pad or left stick moves; any face button fires.';
+                message = `Gamepad active on joystick ${this.activeJoystick}. ${controls}`;
+            }
         }
         this.gamepadConnection = connection;
         this.gamepadStatus = message;

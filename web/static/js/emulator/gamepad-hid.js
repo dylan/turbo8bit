@@ -1,13 +1,6 @@
-const PRO_CONTROLLER_FILTER = { vendorId: 0x057e, productId: 0x2009 };
-const PRO_CONTROLLER_BUTTONS = [
-    [2, 0x04], [2, 0x08], [2, 0x01], [2, 0x02],
-    [4, 0x40], [2, 0x40], [4, 0x80], [2, 0x80],
-    [3, 0x01], [3, 0x02], [3, 0x08], [3, 0x04],
-    [4, 0x02], [4, 0x01], [4, 0x08], [4, 0x04], [3, 0x10]
-];
+import { createHidGamepadDecoder, isGamepadCollection } from './gamepad-hid-reports.js';
 
-// Optional, read-only fallback for a Pro Controller the Gamepad API cannot expose.
-export class ProControllerInput {
+export class HidGamepadInput {
     constructor(onChange = () => {}) {
         this.onChange = onChange;
         this.connected = false;
@@ -20,6 +13,7 @@ export class ProControllerInput {
         this._generation = 0;
         this._connecting = null;
         this._closing = null;
+        this._decoder = null;
     }
 
     connect() {
@@ -41,20 +35,27 @@ export class ProControllerInput {
         }
         let devices;
         try {
-            devices = await hid.requestDevice({ filters: [PRO_CONTROLLER_FILTER] });
+            devices = await hid.requestDevice({ filters: [{ usagePage: 0x01, usage: 0x04 }, { usagePage: 0x01, usage: 0x05 }] });
         } catch (error) {
             if (generation !== this._generation || error.name === 'NotFoundError') return false;
             throw error;
         }
         if (generation !== this._generation) return false;
-        const device = devices.find(candidate =>
-            candidate.vendorId === PRO_CONTROLLER_FILTER.vendorId &&
-            candidate.productId === PRO_CONTROLLER_FILTER.productId);
-        if (!device) return false;
+        const candidates = devices.filter(candidate => candidate.collections.some(isGamepadCollection));
+        if (!candidates.length) return false;
+        let device, decoder;
+        for (const candidate of candidates) {
+            decoder = createHidGamepadDecoder(candidate);
+            if (decoder) { device = candidate; break; }
+        }
+        if (!device) {
+            throw new Error('This controller’s input format is unsupported. Try automatic detection, another browser or the keyboard.');
+        }
         if (this._closing) await this._closing;
         if (generation !== this._generation) return false;
 
         this._device = device;
+        this._decoder = decoder;
         this._hid = hid;
         this._inputListener = event => {
             if (generation === this._generation && this._device === device && this.connected) {
@@ -75,9 +76,9 @@ export class ProControllerInput {
                 return false;
             }
             this.gamepad = {
-                id: `${device.productName || 'Nintendo Switch Pro Controller'} (WebHID)`,
+                id: `${device.productName || 'Controller'} (WebHID)`,
                 connected: true,
-                mapping: 'standard',
+                mapping: '',
                 axes: [0, 0],
                 buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }))
             };
@@ -89,7 +90,7 @@ export class ProControllerInput {
             if (generation === this._generation && this._device === device) this._detach();
             await this._closeIfUnclaimed(device);
             if (generation !== this._generation) return false;
-            throw new Error(`Could not open the Pro Controller: ${error.message || error}`);
+            throw new Error(`Could not open the controller: ${error.message || error}`);
         }
     }
 
@@ -113,6 +114,7 @@ export class ProControllerInput {
         this._hid = null;
         this._inputListener = null;
         this._disconnectListener = null;
+        this._decoder = null;
     }
 
     async _closeDevice(device) {
@@ -134,28 +136,9 @@ export class ProControllerInput {
     }
 
     _readReport(reportId, data) {
-        // Chromium's ControllerData prefix is shared by full 0x30 and reply 0x21.
-        // WebHID data excludes the report ID. No output or calibration is requested.
-        if ((reportId !== 0x21 && reportId !== 0x30) ||
-            !data || data.byteLength < 12 || typeof data.getUint8 !== 'function') return;
-        const rawX = data.getUint8(5) | ((data.getUint8(6) & 0x0f) << 8);
-        const rawY = (data.getUint8(6) >> 4) | (data.getUint8(7) << 4);
-        this.gamepad.axes[0] = this._normalizeAxis(rawX);
-        this.gamepad.axes[1] = -this._normalizeAxis(rawY);
-        for (let index = 0; index < PRO_CONTROLLER_BUTTONS.length; index++) {
-            const [offset, mask] = PRO_CONTROLLER_BUTTONS[index];
-            const pressed = (data.getUint8(offset) & mask) !== 0;
-            this.gamepad.buttons[index].pressed = pressed;
-            this.gamepad.buttons[index].value = pressed ? 1 : 0;
-        }
-        if (!this.ready) {
+        if (this._decoder(reportId, data, this.gamepad) && !this.ready) {
             this.ready = true;
             this.onChange();
         }
-    }
-
-    _normalizeAxis(raw) {
-        const offset = raw - 0x800;
-        return offset / (offset < 0 ? 0x800 : 0x7ff);
     }
 }

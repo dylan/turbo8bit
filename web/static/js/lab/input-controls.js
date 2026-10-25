@@ -5,12 +5,17 @@ let nextControlsId = 0;
 
 function gamepadInfo({ gamepad: pad }) {
     const connected = ['active', 'connected'].includes(pad.connection);
-    const connection = connected ? 'Connected'
+    const connection = connected ? (pad.ready ? 'Connected' : 'Waiting for input')
         : { off: 'Not checked', waiting: 'Waiting for browser', unsupported: 'Unsupported mapping', unavailable: 'Unavailable' }[pad.connection];
-    let guidance = 'Focus this page and press a controller face button. Pair it in your computer’s settings if needed. If already paired and still not detected, try USB or another browser.';
-    if (connected) guidance = !pad.enabled ? 'This browser can see your controller. Turn capture on when you want to play.'
-        : pad.connection === 'active' ? 'D-pad or left stick moves. Any face button fires.' : pad.status;
-    else if (pad.connection === 'unsupported') guidance = 'This browser sees the controller, but its button mapping is unsupported. Use another controller or the keyboard.';
+    let guidance = 'Focus this page and press a controller button. Pair it in your computer’s settings if needed. If already paired and still not detected, try USB or another browser.';
+    if (connected) {
+        if (!pad.ready) guidance = 'Connection open. Press a controller button to check its input. Capture waits for a supported report.';
+        else if (!pad.enabled) guidance = 'This browser can see your controller. Turn capture on when you want to play.';
+        else if (pad.connection === 'active') guidance = pad.transport === 'hid'
+            ? 'D-pad or stick moves. The first four buttons fire.'
+            : 'D-pad or left stick moves. Any face button fires.';
+        else guidance = pad.status;
+    } else if (pad.connection === 'unsupported') guidance = 'This browser sees the controller, but its button mapping is unsupported. Use another controller or the keyboard.';
     else if (pad.connection === 'unavailable') guidance = 'This browser cannot access a gamepad. You can still use the keyboard.';
     return {
         title: 'Gamepad', subtitle: 'Controller input', connection, name: pad.name, guidance,
@@ -54,7 +59,7 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
                 <div class="input-controls__connection"><span data-input-connection-label>Connection</span><strong data-input-connection></strong></div>
                 <p class="input-controls__name" data-input-name hidden></p>
                 <div class="input-controls__direct" data-input-hid hidden>
-                    <button type="button" class="input-controls__direct-button" data-input-hid-toggle aria-describedby="${id}-hid-help">Connect Pro Controller</button>
+                    <button type="button" class="input-controls__direct-button" data-input-hid-toggle aria-describedby="${id}-hid-help">Connect controller</button>
                     <p class="input-controls__direct-help" id="${id}-hid-help" data-input-hid-help></p>
                     <p class="input-controls__direct-error" id="${id}-hid-error" data-input-hid-error role="alert" hidden></p>
                 </div>
@@ -104,7 +109,7 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
             button.setAttribute('aria-label', `${info.title}. ${info.connection}. Capture ${captureState}. Show controls.`);
             const connection = state.gamepad.connection;
             const indicator = device === 'mouse' ? captureState
-                : ['connected', 'active'].includes(connection) ? 'connected'
+                : ['connected', 'active'].includes(connection) ? (state.gamepad.ready ? 'connected' : 'waiting')
                 : ['unsupported', 'unavailable'].includes(connection) ? 'warning'
                 : connection === 'waiting' ? 'waiting' : 'off';
             overlay.querySelector(`[data-input-indicator="${device}"]`).dataset.state = indicator;
@@ -138,9 +143,9 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         directToggle.setAttribute('aria-busy', String(Boolean(hidPending)));
         directToggle.textContent = hidPending === 'connect' ? 'Connecting…'
             : hidPending === 'disconnect' ? 'Disconnecting…'
-            : hid.hidConnected ? 'Disconnect Pro Controller' : 'Connect Pro Controller';
+            : hid.hidConnected ? 'Disconnect controller' : 'Connect controller';
         directHelp.textContent = hid.hidConnected ? 'A direct connection is open. Capture remains a separate control.'
-            : 'Try a direct connection if automatic detection fails. Opens a browser device picker for a Nintendo Switch Pro Controller.';
+            : 'Try a direct connection if automatic detection fails. Opens the browser’s gamepad and joystick picker.';
         directError.textContent = hidError;
         directError.hidden = !hidError;
         directToggle.setAttribute('aria-describedby', `${id}-hid-help${hidError ? ` ${id}-hid-error` : ''}`);

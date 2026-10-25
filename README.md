@@ -38,9 +38,10 @@ alongside them.
   defaulting to joystick 2; Games uses joystick 2. The d-pad or left stick moves
   and any face button fires. Pair the controller in your computer's settings,
   then press a face button so the browser can detect it. In browsers with WebHID,
-  **Connect Pro Controller** offers a direct connection for a Nintendo Switch
-  Pro Controller that automatic detection cannot expose. The browser asks you
-  to choose the device; capture remains a separate switch.
+  **Connect controller** offers a direct gamepad or joystick connection when
+  automatic detection fails. It reads supported HID report descriptors and
+  explains unsupported formats. The browser asks you to choose the device;
+  capture remains a separate switch.
 - Mouse input emulates a **Commodore 1351 on port 1**, including left and right
   buttons. The running program must support a 1351 mouse. Keyboard, gamepad and
   mouse input release on focus loss, hidden tabs, reset and stop; gamepad and
@@ -276,7 +277,7 @@ and cartridge code are all covered without a browser.
 Some cartridge tests skip unless the matching CRT dump is present locally — CRT
 files live in Cloud Storage rather than in the repo.
 
-Current baseline: **840 passed, 25 skipped, 0 failed** (865 collected), with no
+Current baseline: **878 passed, 25 skipped, 0 failed** (903 collected), with no
 unchecked boolean-return test warnings.
 
 The suite also covers browser-wrapper audio/input/lifecycle behavior using

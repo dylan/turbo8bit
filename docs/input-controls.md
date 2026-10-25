@@ -28,8 +28,9 @@ explicitly with `startGamepadDiscovery()`; enabling gamepad input also starts
 discovery. Observation continues afterwards, including while capture is off. A connected indicator means the browser exposes a usable
 controller; pairing with the computer happens in the operating system.
 
-On browsers with WebHID, a Pro Controller can also connect directly. Invoke
-this from a user click so the browser can show its device chooser:
+On browsers with WebHID, **Connect controller** offers a direct connection if
+automatic detection fails. Invoke this from a user click so the browser can
+show its gamepad and joystick chooser:
 
 ```js
 connectButton.addEventListener('click', async () => {
@@ -40,13 +41,27 @@ connectButton.addEventListener('click', async () => {
 await emulator.disconnectGamepadHid();
 ```
 
-The optional adapter requests only Nintendo `057e:2009`. It reads verified
-`0x21`/`0x30` input reports and sends no initialization, rumble, calibration or
-feature commands. Stick normalization uses a fixed center. An open connection
-is not marked active until a supported input report arrives; unverified modes
-such as `0x3f` remain unready. The browser's standard Gamepad input takes
-priority if both paths expose a controller. Capture and mouse/keyboard sources
-remain independent through connection changes and cancellation.
+The chooser filters by HID gamepad and joystick usages, without a vendor or
+product restriction. The read-only adapter interprets the controller's report
+descriptor: absolute X/Y axes, four- or eight-way hats, digital d-pad usages and
+the first four HID buttons. Those buttons fire; HID usages do not identify their
+physical face positions. Packed fields, signed values and controls split across
+report IDs are supported. Reports flatten nested collections once, preserve
+padding and update only their own controls.
+
+Unsupported descriptors fail with an inline explanation before opening a device.
+This includes vendor-only formats without a verified profile, array or relative
+controls, and report IDs shared across top-level collections where field offsets
+are ambiguous. A verified internal profile also handles Nintendo `057e:2009`
+`0x21`/`0x30` packets. Its sticks use a fixed center; other proprietary packets
+need their own verified decoder. No initialization, rumble, calibration or feature
+commands are sent.
+
+An open connection shows **Waiting for input** until supported reports for all
+mapped controls arrive. Native standard Gamepad input takes priority if both
+paths expose a controller. Capture and mouse/keyboard sources remain independent
+through connection changes and cancellation. Direct HID is optional; availability
+depends on the browser, operating system and the device's readable input format.
 
 A host can use its own button and switch the overlay on or off:
 
@@ -102,3 +117,6 @@ Rejected: detached tiles separated the device controls visually; persistent
 labels used more picture space; the earlier large instruction block overwhelmed
 the tiny icons. Device details stay available on selection instead of appearing
 as a large initial overlay.
+
+Report layouts follow the [WebHID dictionaries](https://hid.spec.whatwg.org/#hidcollectioninfo-dictionary)
+and [USB HID usage tables](https://www.usb.org/sites/default/files/hut1_21_0.pdf).
