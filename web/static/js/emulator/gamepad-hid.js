@@ -84,7 +84,7 @@ export class HidGamepadInput {
                 return false;
             }
             this.gamepad = {
-                id: `${device.productName || 'Controller'} (WebHID)`,
+                id: device.productName || 'Controller',
                 connected: true,
                 mapping: '',
                 axes: [0, 0],

@@ -120,7 +120,7 @@ def emulator_ui():
                 this.connected = true;
                 this.ready = false;
                 this.gamepad = standardGamepad();
-                this.gamepad.id = devices[0].productName + ' (WebHID)';
+                this.gamepad.id = devices[0].productName || 'Controller';
                 this.onChange();
                 return true;
             }
@@ -1498,7 +1498,7 @@ def test_connecting_hid_starts_capture_and_preserves_port_and_other_sources(
     assert ctx.eval("emulator.getInputState().gamepad.transport") == "hid"
     assert not ctx.eval("emulator.getInputState().gamepad.ready")
     assert (
-        ctx.eval("emulator.getInputState().gamepad.name") == "USB gamepad (WebHID)"
+        ctx.eval("emulator.getInputState().gamepad.name") == "USB gamepad"
     )
     assert "Waiting for controller input" in ctx.eval(
         "emulator.getInputState().gamepad.status"
@@ -1735,7 +1735,7 @@ def test_descriptor_controller_reaches_joystick_and_preserves_keyboard_and_mouse
         inputReport({ reportId: 0, data: new DataView(new Uint8Array([129, 129, 1]).buffer) });
         emulator.pollGamepad();
     """)
-    assert ctx.eval("emulator.getInputState().gamepad.name") == "HID joystick (WebHID)"
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "HID joystick"
     assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
     assert ctx.eval(
         "emulator.machine.joystick.has('1,left') && emulator.machine.joystick.has('1,up') && emulator.machine.joystick.has('1,fire')"

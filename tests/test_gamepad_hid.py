@@ -123,7 +123,7 @@ def test_connection_is_explicit_filtered_singleflight_and_neutral(hid_gamepad):
     assert await_js(ctx, "pending") is True
     assert ctx.eval("input.connected && !input.ready")
     assert ctx.eval("input.gamepad.connected && input.gamepad.mapping === ''")
-    assert ctx.eval("input.gamepad.id") == "Bluetooth controller (WebHID)"
+    assert ctx.eval("input.gamepad.id") == "Bluetooth controller"
     assert ctx.eval("JSON.stringify(input.gamepad.axes)") == "[0,0]"
     assert ctx.eval("input.gamepad.buttons.length") == 17
     assert ctx.eval(
@@ -511,7 +511,7 @@ def test_unbranded_signed_joystick_and_gamepad_descriptors(
         == pressed
     )
     assert ctx.eval("input.ready && changes.length === 2 && outputCalls === 0")
-    assert ctx.eval("input.gamepad.id") == "Descriptor controller (WebHID)"
+    assert ctx.eval("input.gamepad.id") == "Descriptor controller"
     ctx.eval("report([0, 0, 0], 0);")
     assert ctx.eval("input.gamepad.buttons.every(button => !button.pressed)")
 

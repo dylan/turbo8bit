@@ -47,6 +47,11 @@ continues with capture off. No Gamepad API calls run before discovery or capture
 is requested. A connected indicator means the browser exposes a usable
 controller; pairing with the computer happens in the operating system.
 
+The device label uses the name reported by the active source: HID `productName`
+for a direct connection, or Gamepad `id` for browser input. An unnamed HID device
+uses the generic label "Controller". Transport is available separately as
+`state.gamepad.transport`.
+
 ### Controller bindings
 
 The default mapping uses standard browser controllers and normalized HID input.
