@@ -49,7 +49,7 @@ def hid_gamepad():
             vendorId: 0x057e,
             productId: 0x2009,
             collections: [{ usagePage: 1, usage: 5, inputReports: [] }],
-            productName: 'Pro Controller',
+            productName: 'Bluetooth controller',
             opened: false,
             async open() {
                 openCalls++;
@@ -123,7 +123,7 @@ def test_connection_is_explicit_filtered_singleflight_and_neutral(hid_gamepad):
     assert await_js(ctx, "pending") is True
     assert ctx.eval("input.connected && !input.ready")
     assert ctx.eval("input.gamepad.connected && input.gamepad.mapping === ''")
-    assert ctx.eval("input.gamepad.id") == "Pro Controller (WebHID)"
+    assert ctx.eval("input.gamepad.id") == "Bluetooth controller (WebHID)"
     assert ctx.eval("JSON.stringify(input.gamepad.axes)") == "[0,0]"
     assert ctx.eval("input.gamepad.buttons.length") == 17
     assert ctx.eval(
@@ -395,7 +395,7 @@ def test_retry_survives_cancelled_open_completing_late(
     if not same_device:
         ctx.eval("""
             var replacement = Object.assign(eventTarget(), {
-                vendorId: 0x057e, productId: 0x2009, productName: 'Second Pro Controller',
+                vendorId: 0x057e, productId: 0x2009, productName: 'Second Bluetooth controller',
                 collections: device.collections,
                 opened: false, open: device.open, close: device.close
             });

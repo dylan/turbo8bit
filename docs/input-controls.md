@@ -105,10 +105,10 @@ padding and update only their own controls.
 Unsupported descriptors fail with an inline explanation before opening a device.
 This includes vendor-only formats without a verified profile, array or relative
 controls, and report IDs shared across top-level collections where field offsets
-are ambiguous. A verified internal profile also handles Nintendo `057e:2009`
-`0x21`/`0x30` packets. Its sticks use a fixed center; other proprietary packets
-need their own verified decoder. No initialization, rumble, calibration or feature
-commands are sent.
+are ambiguous. Compatibility decoding applies only to verified report formats;
+other proprietary formats need a host-supplied decoder. Built-in stick decoding
+uses fixed centers and sends no initialization, rumble, calibration or feature
+commands.
 
 An open connection shows **Waiting for input** until supported reports for all
 mapped controls arrive. Native standard Gamepad input takes priority if both
