@@ -29,6 +29,11 @@ alongside them.
 - Focus the C64 screen to use the emulated keyboard. Search fields, sample
   selectors and other page controls retain their normal keyboard behavior.
   **Ctrl+V** on the screen types the clipboard into the C64.
+- A standard gamepad can use the selected joystick port: choose **JOY 1** or
+  **JOY 2** in the BASIC lab, or play a game (joystick 2). Press a controller
+  button to connect, then focus the C64 screen. The d-pad or left stick moves
+  and any face button fires. Controls release when the screen loses focus, the
+  tab is hidden, the controller disconnects, or the C64 resets or stops.
 - The screen toolbar pauses, runs in **Turbo**, adds a **CRT** look, saves a
   snapshot and goes full screen. Pointing at the screen shows the **inspector**:
   the character's screen and colour RAM addresses, the POKEs that change it, an
@@ -257,7 +262,7 @@ and cartridge code are all covered without a browser.
 Some cartridge tests skip unless the matching CRT dump is present locally — CRT
 files live in Cloud Storage rather than in the repo.
 
-Current baseline: **694 passed, 25 skipped, 0 failed** (719 collected), with no
+Current baseline: **730 passed, 25 skipped, 0 failed** (755 collected), with no
 unchecked boolean-return test warnings.
 
 The suite also covers browser-wrapper audio/input/lifecycle behavior using

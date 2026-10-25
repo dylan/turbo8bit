@@ -26,7 +26,7 @@ Fonts. Keep it that way.
 
 ```powershell
 .\dd.ps1 run             # dev server on http://localhost:8082
-.\dd.ps1 test            # pytest; baseline is 694 passed, 25 skipped, 0 failed
+.\dd.ps1 test            # pytest; baseline is 730 passed, 25 skipped, 0 failed
 .\dd.ps1 format          # Black (-Check to report without rewriting)
 .\dd.ps1 deploy          # App Engine (project is hard-pinned inside dd.ps1)
 .\dd.ps1 gen             # regenerate logo + favicons + OG image + BASIC sample previews
@@ -34,7 +34,7 @@ Fonts. Keep it that way.
 ```
 
 The 25 skips are cartridge tests whose CRT dumps are not in the repo. The suite
-collects 719 cases. Investigate unexpected drops in collection, and update this
+collects 755 cases. Investigate unexpected drops in collection, and update this
 baseline when adding tests.
 
 ## Layout
@@ -134,6 +134,14 @@ that measure a voice should set the volume and let the step settle first.
 
 Driving the same keystroke through both produces duplicate characters, because
 the KERNAL scan would inject the matrix key on top of the one you buffered.
+
+**Keyboard and gamepad holds are independent.** Gamepads use the selected
+joystick port and only capture input while the C64 canvas is focused, the page
+is visible and focused, and execution is running. Poll once per display update,
+not once per emulated frame in turbo mode. Releasing a controller must preserve
+keyboard holds, and deferred keyboard releases must preserve controller holds.
+Connection/capture feedback uses `onGamepadChange`, separate from pause/turbo
+state listeners.
 
 **Only `updateShiftKey()` may touch matrix position [1,7].** A PC and a C64 put
 SHIFT in different places: `*` is SHIFT+8 on a PC but an unshifted C64 key, while

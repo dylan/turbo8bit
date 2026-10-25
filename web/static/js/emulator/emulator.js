@@ -8,7 +8,7 @@
 // Provides:
 // - Canvas rendering with VIC-II character and sprite display
 // - Web Audio API output for SID sound
-// - Keyboard input handling
+// - Keyboard and gamepad input handling
 // - Session persistence (snapshot/restore)
 //
 // Browser Usage (index.html):
@@ -59,6 +59,7 @@ const TURBO_MAX_FRAMES = 40;
 
 // The KERNAL keyboard buffer at $0277 holds this many keys ($C6 counts them).
 const KEYBOARD_BUFFER_SIZE = 10;
+const GAMEPAD_DEAD_ZONE = 0.4;
 
 // ============================================================================
 // KEYBOARD MATRIX MAPPING
@@ -217,12 +218,17 @@ export class C64Emulator {
         // rather than running their own timers.
         this.frameListeners = new Set();
         this.stateListeners = new Set();
+        this.gamepadListeners = new Set();
 
         // Joystick emulation state
-        // When activeJoystick is 1 or 2, arrow keys control that joystick
+        // When activeJoystick is 1 or 2, arrow keys and the gamepad use that port
         // When 0, arrow keys work as normal cursor keys
         this.activeJoystick = 0;
         this.joystickState = { up: false, down: false, left: false, right: false, fire: false };
+        // Keyboard and controller holds are independent: releasing either must
+        // not lift a button the other still holds.
+        this.gamepadState = new Set();
+        this.gamepadStatus = '';
 
         // True while the user is physically holding a PC Shift key.
         this.physicalShift = false;
@@ -496,6 +502,7 @@ export class C64Emulator {
     //
     pause() {
         this.paused = true;
+        this.setGamepadButtons(new Set());
         this.notifyStateChange();
     }
 
@@ -539,6 +546,13 @@ export class C64Emulator {
     onStateChange(listener) {
         this.stateListeners.add(listener);
         return () => this.stateListeners.delete(listener);
+    }
+
+    // Subscribe to connection and capture feedback without treating input
+    // changes as pause/turbo changes.
+    onGamepadChange(listener) {
+        this.gamepadListeners.add(listener);
+        return () => this.gamepadListeners.delete(listener);
     }
 
     notifyStateChange() {
@@ -600,6 +614,8 @@ export class C64Emulator {
 
     loop() {
         if (!this.running) return;
+
+        this.pollGamepad();
 
         const now = performance.now();
         let dt = now - this.lastTime;
@@ -697,6 +713,9 @@ export class C64Emulator {
         document.addEventListener('keyup', event => this.handleKeyRelease(event));
         this.canvas.addEventListener('blur', () => this.releaseAllKeys());
         window.addEventListener('blur', () => this.releaseAllKeys());
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) this.releaseAllKeys();
+        });
     }
 
     handleKeyPress(e) {
@@ -818,6 +837,7 @@ export class C64Emulator {
         this.heldShiftKeys.clear();
         this.heldJoystickKeys.clear();
         this.pendingJoystickReleases.length = 0;
+        this.gamepadState.clear();
         this.pendingReleases.length = 0;
         this.physicalShift = false;
         if (this.activeJoystick > 0) {
@@ -844,7 +864,66 @@ export class C64Emulator {
         }
         if (button) {
             this.joystickState[button] = pressed;
-            this.machine.setJoystickButton(this.activeJoystick, button, pressed);
+            this.syncJoystickButton(button);
+        }
+    }
+
+    syncJoystickButton(button) {
+        if (this.activeJoystick > 0) {
+            this.machine.setJoystickButton(this.activeJoystick, button,
+                this.joystickState[button] || this.gamepadState.has(button));
+        }
+    }
+
+    setGamepadButtons(buttons) {
+        const changed = new Set([...this.gamepadState, ...buttons]);
+        const previous = this.gamepadState;
+        this.gamepadState = buttons;
+        for (const button of changed) {
+            if (previous.has(button) !== buttons.has(button)) this.syncJoystickButton(button);
+        }
+    }
+
+    // Sample once per display update, including while paused, so a disconnect
+    // releases input without starting another timer or advancing the machine.
+    pollGamepad() {
+        let pads = [];
+        let available = typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function';
+        if (available) {
+            try {
+                pads = Array.from(navigator.getGamepads());
+            } catch {
+                // A browser or embedding page can deny Gamepad API access.
+                available = false;
+            }
+        }
+        const pad = pads.find(candidate => candidate?.connected && candidate.mapping === 'standard');
+        const captured = this.keyboardEnabled && this.running && !this.paused &&
+            !document.hidden && document.activeElement === this.canvas && document.hasFocus();
+        const buttons = new Set();
+        if (pad && captured && this.activeJoystick > 0) {
+            const held = index => pad.buttons[index]?.pressed;
+            const x = pad.axes[0] ?? 0, y = pad.axes[1] ?? 0;
+            if (x < -GAMEPAD_DEAD_ZONE || held(14)) buttons.add('left');
+            if (x > GAMEPAD_DEAD_ZONE || held(15)) buttons.add('right');
+            if (y < -GAMEPAD_DEAD_ZONE || held(12)) buttons.add('up');
+            if (y > GAMEPAD_DEAD_ZONE || held(13)) buttons.add('down');
+            if ([0, 1, 2, 3].some(held)) buttons.add('fire');
+        }
+        this.setGamepadButtons(buttons);
+
+        let message;
+        if (!available) message = 'Gamepad controls are unavailable in this browser.';
+        else if (!pad) message = pads.some(candidate => candidate?.connected)
+            ? 'This controller has no standard mapping. Use a standard gamepad.'
+            : 'Gamepad: press a button on your controller to connect.';
+        else if (!this.activeJoystick) message = 'Gamepad connected. Joystick mode is off.';
+        else if (this.paused) message = 'Gamepad connected. Resume to play.';
+        else if (!captured) message = 'Gamepad connected. Click the C64 screen to play.';
+        else message = `Gamepad active on joystick ${this.activeJoystick}. D-pad or left stick moves; any face button fires.`;
+        if (message !== this.gamepadStatus) {
+            this.gamepadStatus = message;
+            for (const listener of this.gamepadListeners) listener(message);
         }
     }
 

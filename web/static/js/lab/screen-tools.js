@@ -120,10 +120,14 @@ export function inspectScreen(machine, x, y) {
 //
 // Wire up the screen toolbar, paste and inspector for one emulator.
 // @param {C64Emulator} emulator
-// @param {Object} elements - { frame, toolbar, inspector, status }
+// @param {Object} elements - { frame, toolbar, inspector, status, gamepadStatus }
 //
-export function attachScreenTools(emulator, { frame, toolbar, inspector, status }) {
+export function attachScreenTools(emulator, { frame, toolbar, inspector, status, gamepadStatus }) {
     const canvas = emulator.canvas;
+    if (gamepadStatus) {
+        gamepadStatus.textContent = emulator.gamepadStatus;
+        emulator.onGamepadChange(message => { gamepadStatus.textContent = message; });
+    }
     const button = action => toolbar?.querySelector(`[data-screen-action="${action}"]`);
     const say = message => {
         if (status) status.textContent = message;

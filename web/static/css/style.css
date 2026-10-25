@@ -607,6 +607,17 @@ body {
     pointer-events: none;
 }
 
+/* Connection feedback stays separate from load and audio status. */
+.gamepad-status {
+    width: 725px;
+    max-width: 100%;
+    min-height: 3em;
+    margin: 8px 0 0;
+    color: var(--ui-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
 /* Inspector readout under the screen */
 .screen-inspector {
     display: flex;

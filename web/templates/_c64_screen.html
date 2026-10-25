@@ -22,8 +22,10 @@
     {# The stage is the 4:3 picture; the frame is what goes full screen. #}
     <div class="screen-stage">
         <canvas id="screen" width="384" height="272" tabindex="0"
+                aria-describedby="gamepadStatus"
                 aria-label="Commodore 64 screen. Focus it and type to use the C64 keyboard, or paste text with Ctrl+V."></canvas>
     </div>
 </div>
 <div class="screen-inspector" id="screenInspector"></div>
+<p class="gamepad-status" id="gamepadStatus" role="status"></p>
 {% endmacro %}

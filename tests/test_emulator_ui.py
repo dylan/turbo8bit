@@ -50,15 +50,54 @@ def emulator_ui():
             addKey(code) { this.typed.push(code); }
         };
         var VICIIRenderer = class { render() {} };
+        var canvasListeners = new Map();
+        var windowListeners = new Map();
+        var documentListeners = new Map();
+        function addListener(listeners, type, callback) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(callback);
+        }
+        function dispatch(listeners, type) {
+            for (const callback of listeners.get(type) || []) callback();
+        }
+        window.addEventListener = (type, callback) =>
+            addListener(windowListeners, type, callback);
         var canvas = {
             getContext() { return {}; },
-            addEventListener() {},
+            addEventListener(type, callback) {
+                addListener(canvasListeners, type, callback);
+            },
             closest() { return null; }
         };
+        var pageFocused = true;
         var document = {
             getElementById() { return canvas; },
-            addEventListener() {}
+            activeElement: canvas,
+            hidden: false,
+            hasFocus() { return pageFocused; },
+            addEventListener(type, callback) {
+                addListener(documentListeners, type, callback);
+            }
         };
+        var gamepads = [];
+        var navigator = { getGamepads: () => gamepads };
+        function standardGamepad(axes = [0, 0], pressed = []) {
+            return {
+                connected: true, mapping: 'standard', axes,
+                buttons: Array.from({ length: 17 }, (_, index) => ({
+                    pressed: pressed.includes(index),
+                    value: pressed.includes(index) ? 1 : 0
+                }))
+            };
+        }
+        function activateGamepad(port = 2) {
+            emulator.enableKeyboard();
+            emulator.running = true;
+            emulator.setActiveJoystick(port);
+            const pad = standardGamepad();
+            gamepads = [pad];
+            return pad;
+        }
         var audioContexts = [];
         window.AudioContext = class {
             constructor(options) {
@@ -287,6 +326,274 @@ def test_joystick_mode_does_not_swallow_button_keyup(emulator_ui):
     )
     assert not ctx.eval("down.defaultPrevented || up.defaultPrevented")
     assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+@pytest.mark.parametrize(
+    ("axes", "buttons"),
+    [
+        ([-0.8, 0], ["left"]),
+        ([0.8, 0], ["right"]),
+        ([0, -0.8], ["up"]),
+        ([0, 0.8], ["down"]),
+        ([-0.8, 0.8], ["down", "left"]),
+        ([0.39, -0.39], []),
+    ],
+)
+def test_gamepad_axes_use_a_dead_zone(emulator_ui, axes, buttons):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        var pad = activateGamepad();
+        pad.axes = {json.dumps(axes)};
+        emulator.pollGamepad();
+        """)
+    assert json.loads(
+        ctx.eval("JSON.stringify([...emulator.machine.joystick].sort())")
+    ) == ["2," + button for button in buttons]
+    ctx.eval("pad.axes = [0, 0]; emulator.pollGamepad();")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+@pytest.mark.parametrize(
+    ("index", "button"), [(12, "up"), (13, "down"), (14, "left"), (15, "right")]
+)
+def test_gamepad_standard_dpad_controls_the_selected_port(emulator_ui, index, button):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        activateGamepad(1);
+        gamepads = [standardGamepad([0, 0], [{index}])];
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("JSON.stringify([...emulator.machine.joystick])") == json.dumps(
+        ["1," + button], separators=(",", ":")
+    )
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_gamepad_face_buttons_fire_and_release(emulator_ui, index):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        activateGamepad();
+        gamepads = [standardGamepad([0, 0], [{index}])];
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.machine.joystick.has('2,fire')")
+    ctx.eval("gamepads = [standardGamepad()]; emulator.pollGamepad();")
+    assert not ctx.eval("emulator.machine.joystick.has('2,fire')")
+
+
+def test_gamepad_selects_the_first_connected_standard_pad_from_sparse_slots(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval("""
+        activateGamepad();
+        var disconnected = standardGamepad([1, 0]);
+        disconnected.connected = false;
+        var unsupported = standardGamepad([1, 0]);
+        unsupported.mapping = '';
+        gamepads = [null, disconnected, unsupported,
+            standardGamepad([-1, 0]), standardGamepad([1, 0])];
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.machine.joystick.has('2,left')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+    ctx.eval("gamepads.length = 3; emulator.pollGamepad();")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+def test_gamepad_release_keeps_a_keyboard_direction_held(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [0, -1];
+        emulator.pollGamepad();
+        emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
+        pad.axes = [0, 0];
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.machine.joystick.has('2,up')")
+    ctx.eval(
+        "emulator.frame++; emulator.handleKeyRelease(keyEvent('ArrowUp', 'ArrowUp'));"
+    )
+    assert not ctx.eval("emulator.machine.joystick.has('2,up')")
+
+
+def test_deferred_keyboard_release_keeps_a_gamepad_direction_held(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [0, -1];
+        emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
+        emulator.handleKeyRelease(keyEvent('ArrowUp', 'ArrowUp'));
+        emulator.lastTime = -25;
+        emulator.loop();
+        """)
+    assert ctx.eval("emulator.pendingJoystickReleases.length") == 0
+    assert ctx.eval("emulator.machine.joystick.has('2,up')")
+    ctx.eval("pad.axes = [0, 0]; emulator.pollGamepad();")
+    assert not ctx.eval("emulator.machine.joystick.has('2,up')")
+
+
+def test_gamepad_is_polled_once_before_a_turbo_batch(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [1, 0];
+        var polls = 0;
+        var poll = emulator.pollGamepad.bind(emulator);
+        emulator.pollGamepad = () => { polls++; poll(); };
+        var frameInputs = [];
+        emulator.machine.runFrame = () =>
+            frameInputs.push(emulator.machine.joystick.has('2,right'));
+        emulator.turbo = true;
+        emulator.loop();
+        """)
+    assert ctx.eval("polls") == 1
+    assert ctx.eval("frameInputs.length") > 1
+    assert ctx.eval("frameInputs.every(Boolean)")
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "emulator.setActiveJoystick(0)",
+        "emulator.setActiveJoystick(1)",
+        "emulator.reset()",
+        "emulator.stop()",
+        "emulator.releaseAllKeys()",
+    ],
+)
+def test_gamepad_lifecycle_releases_the_old_port(emulator_ui, action):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        var pad = activateGamepad();
+        pad.axes = [1, 0];
+        emulator.pollGamepad();
+        {action};
+        """)
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("emulator.gamepadState.size") == 0
+    if action == "emulator.setActiveJoystick(1)":
+        ctx.eval("emulator.pollGamepad();")
+        assert ctx.eval("emulator.machine.joystick.has('1,right')")
+        assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+    elif action == "emulator.setActiveJoystick(0)":
+        ctx.eval("emulator.pollGamepad();")
+        assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+@pytest.mark.parametrize(
+    "inactive",
+    [
+        "emulator.keyboardEnabled = false",
+        "emulator.running = false",
+        "emulator.paused = true",
+        "document.hidden = true",
+        "pageFocused = false",
+        "document.activeElement = {}",
+    ],
+)
+def test_gamepad_poll_releases_input_when_the_screen_is_inactive(emulator_ui, inactive):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        var pad = activateGamepad();
+        pad.axes = [-1, 0];
+        emulator.pollGamepad();
+        {inactive};
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("emulator.gamepadState.size") == 0
+
+
+@pytest.mark.parametrize("surface", ["canvas", "window"])
+def test_gamepad_blur_releases_immediately_and_stays_released(emulator_ui, surface):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [-1, 0];
+        emulator.pollGamepad();
+        emulator.handleKeyPress(keyEvent(' ', 'Space'));
+        """)
+    if surface == "canvas":
+        ctx.eval("document.activeElement = {}; dispatch(canvasListeners, 'blur');")
+    else:
+        ctx.eval("pageFocused = false; dispatch(windowListeners, 'blur');")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("emulator.pollGamepad();")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+def test_gamepad_visibility_change_releases_immediately(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [1, 0];
+        emulator.pollGamepad();
+        document.hidden = true;
+        dispatch(documentListeners, 'visibilitychange');
+        """)
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("emulator.pollGamepad();")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+def test_pause_releases_gamepad_input_and_preserves_keyboard_holds(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        pad.axes = [1, 0];
+        emulator.pollGamepad();
+        emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
+        emulator.pause();
+        """)
+    assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert ctx.eval("emulator.machine.joystick.has('2,up')")
+    ctx.eval("emulator.loop();")
+    assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert ctx.eval("emulator.machine.joystick.has('2,up')")
+    ctx.eval("emulator.resume(); emulator.pollGamepad();")
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "delete navigator.getGamepads",
+        "navigator.getGamepads = () => { throw new Error('SecurityError'); }",
+    ],
+)
+def test_unavailable_gamepad_api_releases_input_and_keeps_the_loop_alive(
+    emulator_ui, api
+):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        var pad = activateGamepad();
+        pad.axes = [1, 0];
+        emulator.pollGamepad();
+        {api};
+        emulator.lastTime = -25;
+        emulator.loop();
+        """)
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("scheduledFrames.size") == 1
+    assert ctx.eval("emulator.frame") == 1
+
+
+def test_gamepad_status_notifies_observers_only_when_it_changes(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad();
+        var statuses = [];
+        emulator.onGamepadChange(message => statuses.push(message));
+        emulator.pollGamepad();
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("statuses.length") == 1
+    assert ctx.eval("typeof statuses[0]") == "string"
+    ctx.eval("gamepads = []; emulator.pollGamepad(); emulator.pollGamepad();")
+    assert ctx.eval("statuses.length") == 2
+    assert ctx.eval("statuses[0] !== statuses[1]")
 
 
 @pytest.mark.parametrize(
