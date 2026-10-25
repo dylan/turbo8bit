@@ -1328,11 +1328,10 @@ def test_unowned_mouse_release_keeps_the_native_event_untouched(emulator_ui):
 
 
 @pytest.mark.parametrize("port", [0, 1, 2])
-def test_explicit_gamepad_discovery_detects_without_capture_or_port_changes(
-    emulator_ui, port
-):
+def test_observation_only_discovery_preserves_capture_and_port(emulator_ui, port):
     ctx = emulator_ui
     ctx.eval(f"""
+        emulator.setGamepadAutoCapture(false);
         emulator.enableKeyboard(); emulator.running = true;
         emulator.setActiveJoystick({port});
         var pad = standardGamepad([1, -1], [0]); pad.id = 'Controller';
@@ -1480,7 +1479,7 @@ def test_hid_is_lazy_and_requests_only_in_the_explicit_connection_call(emulator_
     assert ctx.eval("enumerations") == 0
 
 
-def test_connecting_hid_does_not_enable_capture_change_port_or_release_other_sources(
+def test_connecting_hid_starts_capture_and_preserves_port_and_other_sources(
     emulator_ui,
 ):
     ctx = emulator_ui
@@ -1493,7 +1492,7 @@ def test_connecting_hid_does_not_enable_capture_change_port_or_release_other_sou
         dispatch(canvasListeners, 'pointermove', mouseEvent(0, 5, 4));
         """)
     connect_hid(ctx)
-    assert not ctx.eval("emulator.getInputState().gamepad.enabled")
+    assert ctx.eval("emulator.getInputState().gamepad.enabled")
     assert ctx.eval("emulator.getInputState().gamepad.hidConnected")
     assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
     assert ctx.eval("emulator.getInputState().gamepad.transport") == "hid"
@@ -1504,7 +1503,7 @@ def test_connecting_hid_does_not_enable_capture_change_port_or_release_other_sou
     assert "Waiting for controller input" in ctx.eval(
         "emulator.getInputState().gamepad.status"
     )
-    assert "Capture is off" in ctx.eval("emulator.getInputState().gamepad.status")
+    assert "Capture is off" not in ctx.eval("emulator.getInputState().gamepad.status")
     assert ctx.eval("emulator.activeJoystick") == 1
     assert ctx.eval("document.activeElement === canvas")
     assert ctx.eval("emulator.machine.joystick.has('1,up')")
@@ -1514,17 +1513,19 @@ def test_connecting_hid_does_not_enable_capture_change_port_or_release_other_sou
     assert ctx.eval("JSON.stringify(emulator.machine.mouseMoves)") == "[[5,4]]"
 
 
-def test_hid_fallback_requires_first_report_and_explicit_capture(emulator_ui):
+def test_hid_auto_capture_waits_for_first_report_and_respects_manual_off(emulator_ui):
     ctx = emulator_ui
     ctx.eval(
         "emulator.enableKeyboard(); emulator.running = true; emulator.setActiveJoystick(1);"
     )
     connect_hid(ctx)
+    assert ctx.eval(
+        "emulator.gamepadEnabled && emulator.getInputState().gamepad.autoCapture"
+    )
     ctx.eval("""
         var hid = hidGamepadInputs[0];
         hid.gamepad.axes = [1, 0];
         hid.gamepad.buttons[0].pressed = true;
-        emulator.setGamepadEnabled(true);
         """)
     assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
     assert not ctx.eval("emulator.getInputState().gamepad.ready")
@@ -1903,12 +1904,175 @@ def test_configuring_mapper_does_not_start_discovery_or_enable_capture(emulator_
     )
 
 
-def test_custom_hid_factory_is_forwarded_without_capture_changes(emulator_ui):
+def test_custom_hid_factory_respects_observation_only_capture_policy(emulator_ui):
     ctx = emulator_ui
+    ctx.eval("emulator.setGamepadAutoCapture(false);")
     connect_hid(ctx)
     ctx.eval("emulator.disconnectGamepadHid(); var customDecoder = () => null;")
     assert ctx.eval("emulator.connectGamepadHid({ createDecoder: customDecoder })").get(
         timeout=2
     )
     assert ctx.eval("hidGamepadInputs[0].options.createDecoder === customDecoder")
+    assert ctx.eval("!emulator.gamepadEnabled && emulator.activeJoystick === 0")
+
+
+@pytest.mark.parametrize("port", [0, 1, 2])
+def test_discovery_automatically_captures_a_supported_controller(emulator_ui, port):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        emulator.enableKeyboard(); emulator.running = true;
+        emulator.setActiveJoystick({port});
+        gamepads = [standardGamepad([1, -1], [0])];
+        emulator.startGamepadDiscovery();
+    """)
+    selected_port = port or 2
+    assert ctx.eval("emulator.getInputState().gamepad.autoCapture")
+    assert ctx.eval("emulator.getInputState().gamepad.enabled")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+    assert ctx.eval("emulator.activeJoystick") == selected_port
+    assert ctx.eval(
+        f"['right', 'up', 'fire'].every(button => emulator.machine.joystick.has('{selected_port},' + button))"
+    )
+
+
+def test_manual_capture_off_survives_polling_reconnect_and_transport_changes(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval("""
+        emulator.enableKeyboard(); emulator.running = true;
+        gamepads = [standardGamepad([1, 0], [0])];
+        emulator.startGamepadDiscovery();
+        emulator.setGamepadEnabled(false);
+        gamepads = [standardGamepad([-1, 0], [1])];
+        emulator.pollGamepad();
+        gamepads = []; dispatch(windowListeners, 'gamepaddisconnected');
+        gamepads = [standardGamepad([1, 0], [0])];
+        dispatch(windowListeners, 'gamepadconnected');
+    """)
+    assert ctx.eval(
+        "!emulator.gamepadEnabled && !emulator.getInputState().gamepad.autoCapture"
+    )
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("gamepads = [];")
+    connect_hid(ctx)
+    ctx.eval("hidGamepadInputs[0].report([1, 0], [0]); emulator.pollGamepad();")
+    assert ctx.eval(
+        '!emulator.gamepadEnabled && emulator.getInputState().gamepad.transport === "hid"'
+    )
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("emulator.setGamepadAutoCapture(true);")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+    assert ctx.eval(
+        "emulator.machine.joystick.has('2,right') && emulator.machine.joystick.has('2,fire')"
+    )
+
+
+def test_constructor_can_keep_gamepad_discovery_observation_only(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        emulator = new C64Emulator('screen', { audioEnabled: false, gamepadAutoCapture: false });
+        emulator.enableKeyboard(); emulator.running = true;
+        gamepads = [standardGamepad([1, 0], [0])];
+        emulator.startGamepadDiscovery();
+    """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert ctx.eval(
+        "!emulator.gamepadEnabled && !emulator.getInputState().gamepad.autoCapture"
+    )
+    assert ctx.eval(
+        "emulator.activeJoystick === 0 && emulator.machine.joystick.size === 0"
+    )
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "emulator.paused = true",
+        "emulator.running = false",
+        "emulator.keyboardEnabled = false",
+        "document.hidden = true",
+        "document.activeElement = {}",
+        "pageFocused = false",
+    ],
+)
+def test_auto_capture_keeps_input_gated_until_the_screen_can_receive_it(
+    emulator_ui, context
+):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        emulator.enableKeyboard(); emulator.running = true;
+        {context};
+        gamepads = [standardGamepad([1, 0], [0])];
+        emulator.startGamepadDiscovery();
+    """)
+    assert ctx.eval("emulator.gamepadEnabled")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    ctx.eval("""
+        emulator.paused = false; emulator.running = true; emulator.keyboardEnabled = true;
+        document.hidden = false; document.activeElement = canvas; pageFocused = true;
+        emulator.pollGamepad();
+    """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+    assert ctx.eval(
+        "emulator.machine.joystick.has('2,right') && emulator.machine.joystick.has('2,fire')"
+    )
+
+
+def test_manual_off_during_a_pending_connection_is_preserved(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var chooseDevice;
+        navigator.hid = { requestDevice: () => new Promise(resolve => { chooseDevice = resolve; }) };
+        var pendingConnection = emulator.connectGamepadHid();
+        emulator.setGamepadEnabled(false);
+        chooseDevice([{ productName: 'Bluetooth controller' }]);
+    """)
+    assert ctx.eval("pendingConnection").get(timeout=2)
+    ctx.eval("hidGamepadInputs[0].report([1, 0], [0]);")
+    assert ctx.eval("emulator.getInputState().gamepad.hidConnected")
+    assert ctx.eval(
+        "!emulator.gamepadEnabled && !emulator.getInputState().gamepad.autoCapture"
+    )
+    assert ctx.eval(
+        "emulator.activeJoystick === 0 && emulator.machine.joystick.size === 0"
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome", ["Promise.resolve([])", "Promise.reject(new Error('Device busy'))"]
+)
+def test_cancel_or_failure_does_not_start_automatic_capture(emulator_ui, outcome):
+    ctx = emulator_ui
+    ctx.eval(f"navigator.hid = {{ requestDevice: () => {outcome} }};")
+    ctx.eval("emulator.connectGamepadHid().catch(() => false)").get(timeout=2)
+    assert ctx.eval(
+        "!emulator.gamepadEnabled && emulator.getInputState().gamepad.autoCapture"
+    )
+    assert ctx.eval(
+        "emulator.activeJoystick === 0 && emulator.machine.joystick.size === 0"
+    )
+
+
+def test_turning_off_automatic_capture_preserves_capture_already_enabled(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        emulator.enableKeyboard(); emulator.running = true;
+        gamepads = [standardGamepad([1, 0], [0])];
+        emulator.startGamepadDiscovery(); emulator.setGamepadAutoCapture(false);
+    """)
+    assert ctx.eval(
+        "emulator.gamepadEnabled && !emulator.getInputState().gamepad.autoCapture"
+    )
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+
+
+def test_unsupported_controller_does_not_enable_capture_or_change_port(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var raw = standardGamepad([1, 0], [0]); raw.mapping = '';
+        gamepads = [raw]; emulator.startGamepadDiscovery();
+    """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "unsupported"
     assert ctx.eval("!emulator.gamepadEnabled && emulator.activeJoystick === 0")

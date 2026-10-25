@@ -231,6 +231,7 @@ export class C64Emulator {
         // not lift a button the other still holds.
         this.gamepadState = new Set();
         this.gamepadEnabled = false;
+        this.gamepadAutoCapture = options.gamepadAutoCapture !== false;
         this.gamepadConnection = 'off';
         this.gamepadStatus = 'Gamepad capture is off.';
         this.gamepadName = '';
@@ -587,7 +588,7 @@ export class C64Emulator {
             else status = '1351 mouse active on port 1. Move and use the left or right button.';
         }
         return {
-            gamepad: { enabled: this.gamepadEnabled, connection: this.gamepadConnection,
+            gamepad: { enabled: this.gamepadEnabled, autoCapture: this.gamepadAutoCapture, connection: this.gamepadConnection,
                 status: this.gamepadStatus, name: this.gamepadName,
                 hidAvailable: typeof navigator !== 'undefined' && typeof navigator.hid?.requestDevice === 'function',
                 hidConnected: Boolean(this.gamepadHidInput?.connected),
@@ -968,9 +969,15 @@ export class C64Emulator {
         this.pollGamepad();
     }
 
+    setGamepadAutoCapture(enabled) {
+        this.gamepadAutoCapture = Boolean(enabled);
+        this.pollGamepad();
+    }
+
     setGamepadEnabled(enabled) {
         enabled = Boolean(enabled);
         if (enabled && !this.activeJoystick) this.setActiveJoystick(2);
+        this.gamepadAutoCapture = false;
         this.gamepadEnabled = enabled;
         if (enabled) this.startGamepadDiscovery();
         else this.pollGamepad();
@@ -1040,6 +1047,10 @@ export class C64Emulator {
         this.gamepadReady = Boolean(pad && (transport === 'gamepad' || this.gamepadHidInput.ready));
         this.gamepadAvailable = available;
         this.gamepadName = (pad ?? connected ?? this.gamepadHidInput?.gamepad)?.id ?? '';
+        if (pad && this.gamepadAutoCapture && !this.gamepadEnabled) {
+            this.gamepadEnabled = true;
+            if (!this.activeJoystick) this.setActiveJoystick(2);
+        }
         const captured = this.gamepadEnabled && this.gamepadReady && this.inputCaptured() && this.activeJoystick > 0;
         this.setGamepadButtons(captured ? buttons : new Set());
         if (!this.inputCaptured()) this.releaseMouse();

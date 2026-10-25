@@ -10,7 +10,7 @@ function gamepadInfo({ gamepad: pad }) {
     let guidance = 'Focus this page and press a controller button. Pair it in your computer’s settings if needed. If already paired and still not detected, try USB or another browser.';
     if (pad.error) guidance = pad.error;
     else if (connected) {
-        if (!pad.ready) guidance = 'Connection open. Press a controller button to check its input. Capture waits for a supported report.';
+        if (!pad.ready) guidance = 'Connection open. Press a controller button to check its input.';
         else if (!pad.enabled) guidance = 'This browser can see your controller. Turn capture on when you want to play.';
         else if (pad.connection === 'active' && pad.mapping === 'custom') guidance = 'Your custom controller bindings are active.';
         else if (pad.connection === 'active') guidance = pad.transport === 'hid'
@@ -22,7 +22,7 @@ function gamepadInfo({ gamepad: pad }) {
     return {
         title: 'Gamepad', subtitle: 'Controller input', connection, name: pad.name, guidance,
         enabled: pad.enabled, active: pad.enabled && pad.connection === 'active',
-        footnote: 'Connection and capture are separate. Enabled inputs work together while the C64 screen has focus.'
+        footnote: 'You can turn capture off at any time. Enabled inputs work together while the C64 screen has focus.'
     };
 }
 
@@ -158,7 +158,8 @@ export function attachInputControls(emulator, {
         directToggle.textContent = hidPending === 'connect' ? 'Connecting…'
             : hidPending === 'disconnect' ? 'Disconnecting…'
             : hid.hidConnected ? 'Disconnect controller' : 'Connect controller';
-        directHelp.textContent = hid.hidConnected ? 'A direct connection is open. Capture remains a separate control.'
+        directHelp.textContent = hid.hidConnected
+            ? hid.enabled ? 'Capture is on. Use the switch to turn it off.' : 'Capture is off. Turn it on when you want to play.'
             : 'Try a direct connection if automatic detection fails. Opens the browser’s gamepad and joystick picker.';
         directError.textContent = hidError;
         directError.hidden = !hidError;
@@ -166,6 +167,12 @@ export function attachInputControls(emulator, {
         const message = devices.map(button => button.dataset.inputDevice === 'gamepad' ? pad : mouse)
             .map(info => `${info.title}: ${info.connection}, capture ${info.active ? 'active' : info.enabled ? 'on' : 'off'}.`).join(' ');
         if (feedback.textContent !== message) feedback.textContent = message;
+    }
+
+    function focusAutomaticCapture(started) {
+        if (started && state.gamepad.autoCapture && state.gamepad.enabled && state.gamepad.ready
+            && open && selected === 'gamepad' && !hidPending && document.hasFocus()
+            && overlay.contains(document.activeElement)) canvas.focus({ preventScroll: true });
     }
 
     function restoreFocus() {
@@ -231,11 +238,13 @@ export function attachInputControls(emulator, {
             overlay.dataset.instant = String(event.detail === 0);
             const next = selected === button.dataset.inputDevice ? null : button.dataset.inputDevice;
             const changed = next !== null && next !== selected;
+            const wasCapturing = state.gamepad.enabled;
             if (changed && next === 'gamepad') emulator.startGamepadDiscovery();
             selected = next;
             selectionRevision++;
             update();
             if (changed) detailBody.scrollTop = 0;
+            focusAutomaticCapture(changed && next === 'gamepad' && !wasCapturing);
         }, options);
     }
     tray.addEventListener('keydown', event => {
@@ -269,10 +278,15 @@ export function attachInputControls(emulator, {
         document.addEventListener('focusin', trackFocus, options);
         hidPending = disconnecting ? 'disconnect' : 'connect';
         hidError = '';
+        let connected = false;
         update();
         try {
             if (disconnecting) await emulator.disconnectGamepadHid();
-            else await connectGamepad();
+            else {
+                const result = await connectGamepad();
+                connected = result !== false && state.gamepad.enabled
+                    && ['connected', 'active'].includes(state.gamepad.connection);
+            }
         } catch (error) {
             if (controller.signal.aborted) return;
             hidError = `${disconnecting ? 'Disconnect' : 'Connection'} failed: ${error?.message ?? String(error)}`;
@@ -283,7 +297,7 @@ export function attachInputControls(emulator, {
                 update();
                 if (restorePendingFocus && revision === selectionRevision && available && open && selected === 'gamepad'
                     && [document.body, document.documentElement, focusBeforePending].includes(document.activeElement)) {
-                    (direct.hidden ? capture : directToggle).focus({ preventScroll: true });
+                    (connected ? canvas : direct.hidden ? capture : directToggle).focus({ preventScroll: true });
                 }
             }
         }
@@ -314,8 +328,10 @@ export function attachInputControls(emulator, {
         }
     }
     const unsubscribe = emulator.onInputChange(next => {
+        const started = !state.gamepad.enabled && next.gamepad.enabled;
         state = next;
         update();
+        focusAutomaticCapture(started);
     });
     setDevices(initialDevices);
     update();

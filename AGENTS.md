@@ -26,7 +26,7 @@ Fonts. Keep it that way.
 
 ```powershell
 .\dd.ps1 run             # dev server on http://localhost:8082
-.\dd.ps1 test            # pytest; baseline is 905 passed, 25 skipped, 0 failed
+.\dd.ps1 test            # pytest; baseline is 921 passed, 25 skipped, 0 failed
 .\dd.ps1 format          # Black (-Check to report without rewriting)
 .\dd.ps1 deploy          # App Engine (project is hard-pinned inside dd.ps1)
 .\dd.ps1 gen             # regenerate logo + favicons + OG image + BASIC sample previews
@@ -34,7 +34,7 @@ Fonts. Keep it that way.
 ```
 
 The 25 skips are cartridge tests whose CRT dumps are not in the repo. The suite
-collects 930 cases. Investigate unexpected drops in collection, and update this
+collects 946 cases. Investigate unexpected drops in collection, and update this
 baseline when adding tests.
 
 ## Layout
@@ -136,10 +136,14 @@ Driving the same keystroke through both produces duplicate characters, because
 the KERNAL scan would inject the matrix key on top of the one you buffered.
 
 **Keyboard and gamepad holds are independent.** Selecting Gamepad in the input
-dock starts discovery without enabling capture or changing the joystick port.
-Hosts can call `startGamepadDiscovery()`; enabling capture starts it too. No
+dock starts discovery. Supported connections enable capture by default,
+keeping the selected port or choosing port 2 when none is selected. Hosts can call `startGamepadDiscovery()`; enabling capture starts it too. No
 Gamepad API calls run before either explicit action. Discovery continues with
-capture off. Gamepads use the selected joystick port, defaulting to port 2, and
+capture off. `gamepadAutoCapture: false` at construction or
+`setGamepadAutoCapture(false)` supports observation-only hosts. Explicit
+`setGamepadEnabled(false)` also disables automatic capture, so polling, report
+readiness, reconnects and transport changes must respect Off.
+`setGamepadAutoCapture(true)` restores automatic starts. Gamepads use the selected joystick port, defaulting to port 2, and
 forward input only while the C64 canvas and page have focus, the page is visible
 and execution is running. Poll once per display update, not per emulated frame
 in turbo mode. Releasing either source must preserve the other's held buttons.
@@ -149,7 +153,8 @@ state listeners.
 **Bindings are separate from detection and capture.** `setGamepadMapper()`
 accepts a synchronous snapshot-to-actions callback; returning null skips a device.
 A custom mapper can support raw browser layouts and choose a particular device.
-Setting bindings alone must not start discovery, enable capture or change ports.
+Setting bindings alone must not start discovery; controllers accepted during
+existing discovery follow the current capture policy.
 Copy returned action sets before storing holds. Mapping and decoding errors release
 only gamepad input and surface through `getInputState().gamepad.error`; neutralize
 snapshots before recovery. The dock must use custom-binding instructions when
@@ -164,11 +169,13 @@ never traverse their children again or assume vendor bytes have a standard
 layout. Reject ambiguous or unsupported descriptors before opening. Verified
 vendor profiles stay internal. Send no output or calibration commands. Native
 standard Gamepad snapshots take priority. Open and ready are distinct: no input
-forwards before supported reports for all mapped controls. Connect/disconnect/
-cancel never change capture flags or port selection. Pending operation generations
+forwards before supported reports for all mapped controls. Successful connections
+follow the capture policy. Cancellation, failure and disconnect must respect
+manual capture choices and preserve other input sources. Pending operation generations
 and device ownership prevent late completion from closing or detaching a newer
-connection. Chooser completion restores UI focus only if the user has not moved
-elsewhere, closed the dock or changed devices. `setDevices()` changes only visible dock entries
+connection. Successful connections return focus to the canvas when capture is on;
+cancellation and failure restore a usable control. Do not override focus
+when the user has moved to another control, closed the dock or changed devices. `setDevices()` changes only visible dock entries
 and their order; removing a focused entry must move focus to a visible control
 or the canvas, without changing source capture settings.
 

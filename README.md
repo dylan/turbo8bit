@@ -30,10 +30,11 @@ alongside them.
   selectors and other page controls retain their normal keyboard behavior.
   **Ctrl+V** on the screen types the clipboard into the C64.
 - Select **Input controls** in the screen toolbar to open the input dock.
-  Choose **Gamepad** to detect a controller without capturing it, or choose
-  **1351 mouse**, then turn capture on for each device you want to use. Status and
-  instructions stay inside the emulator, including in full screen. A detected
-  controller keeps its connected indicator when capture is off.
+  Choose **Gamepad** to find a controller; capture starts when it connects.
+  Choose **1351 mouse** and turn capture on for programs that support it.
+  Status and instructions stay inside the emulator, including in full screen. A detected
+  controller keeps its connected indicator when capture is off. Turning capture
+  off keeps it off until you enable it again.
 - Standard gamepads use the selected **JOY 1** or **JOY 2** port in BASIC,
   defaulting to joystick 2; Games uses joystick 2. The d-pad or left stick moves
   and any face button fires. Pair the controller in your computer's settings,
@@ -41,7 +42,7 @@ alongside them.
   **Connect controller** offers a direct gamepad or joystick connection when
   automatic detection fails. It reads supported HID report descriptors and
   explains unsupported formats. The browser asks you to choose the device;
-  capture remains a separate switch.
+  capture starts automatically, and the switch lets you turn it off.
 - Mouse input emulates a **Commodore 1351 on port 1**, including left and right
   buttons. The running program must support a 1351 mouse. Keyboard, gamepad and
   mouse input release on focus loss, hidden tabs, reset and stop; gamepad and
@@ -280,7 +281,7 @@ and cartridge code are all covered without a browser.
 Some cartridge tests skip unless the matching CRT dump is present locally — CRT
 files live in Cloud Storage rather than in the repo.
 
-Current baseline: **905 passed, 25 skipped, 0 failed** (930 collected), with no
+Current baseline: **921 passed, 25 skipped, 0 failed** (946 collected), with no
 unchecked boolean-return test warnings.
 
 The suite also covers browser-wrapper audio/input/lifecycle behavior using

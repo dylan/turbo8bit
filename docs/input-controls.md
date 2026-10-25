@@ -2,37 +2,55 @@
 
 The BASIC, Assembly and Games labs share an opt-in input dock. Select **Input
 controls** in the screen toolbar, then choose a device. Its details distinguish
-what the browser detects from whether the emulator is capturing input. Turning
-capture on focuses the C64 screen; input releases when the screen loses focus.
+what the browser detects from whether the emulator is capturing input. Gamepad
+capture starts automatically when a controller connects. Connecting from the dock
+returns focus to the C64 screen unless you have moved to another control. Input
+releases when the screen loses focus. You can turn capture off at any time.
+Mouse capture starts off.
 
 ## JavaScript API
 
 The emulator handles input independently of the optional dock:
 
 ```js
-emulator.startGamepadDiscovery(); // Detect without forwarding input.
-emulator.setGamepadEnabled(true);
+emulator.startGamepadDiscovery(); // Capture starts when a controller connects.
 emulator.setMouseEnabled(true);
 const state = emulator.getInputState();
 const unsubscribe = emulator.onInputChange(state => {
-    // state.gamepad: enabled, connection, status, name, transport, ready,
+    // state.gamepad: enabled, autoCapture, connection, status, name, transport, ready,
     //                hidAvailable, hidConnected, mapping, error
     // state.mouse: enabled, captured, status
 });
 unsubscribe();
 ```
 
-Both devices start disabled. Selecting the Gamepad thumbnail starts discovery
-without enabling capture or changing the joystick port. A host can start it
-explicitly with `startGamepadDiscovery()`; enabling gamepad input also starts
-discovery. Observation continues afterwards, including while capture is off. A connected indicator means the browser exposes a usable
+Selecting the Gamepad thumbnail starts discovery. A supported connection enables
+capture and uses the selected joystick port, defaulting to port 2. HID input still
+waits for a supported report before forwarding anything. Screen focus, page focus,
+visibility and execution gates apply even when capture is enabled.
+
+Turning capture off with `setGamepadEnabled(false)` also turns off automatic
+capture, so polling, reconnecting or receiving the first HID report cannot undo
+that choice. Use `setGamepadEnabled(true)` to turn it back on, or
+`setGamepadAutoCapture(true)` to restore automatic capture on connection.
+
+Hosts that want observation without capture can configure it at construction:
+
+```js
+const emulator = new C64Emulator('screen', { gamepadAutoCapture: false });
+emulator.startGamepadDiscovery();
+```
+
+`setGamepadAutoCapture(false)` changes the policy for future automatic starts;
+use `setGamepadEnabled(false)` to stop capture that is already on. Discovery
+continues with capture off. No Gamepad API calls run before discovery or capture
+is requested. A connected indicator means the browser exposes a usable
 controller; pairing with the computer happens in the operating system.
 
 ### Controller bindings
 
 The default mapping uses standard browser controllers and normalized HID input.
-A host can replace it without changing discovery, capture, port selection or the
-dock. The mapper runs synchronously on fresh snapshots, including while capture
+A host can replace the mapping through JavaScript, independently of the dock. The mapper runs synchronously on fresh snapshots, including while capture
 is off, and returns pressed C64 actions: `up`, `down`, `left`, `right`, `fire`.
 Return an empty array or set for neutral input, or `null` to skip a device. The
 first accepted native controller takes priority over a direct HID connection.
@@ -66,8 +84,9 @@ emulator.setGamepadMapper(null); // Restore automatic standard bindings.
 ```
 
 Changing the mapper recomputes held actions immediately. Returned sets are copied,
-so reusing a mutable set cannot leave old buttons held. Configuration alone does
-not start discovery or capture. `state.gamepad.mapping` is `default` or `custom`;
+so reusing a mutable set cannot leave old buttons held. Changing bindings does
+not start discovery. Once discovery is active, newly accepted controllers follow
+the current capture policy. `state.gamepad.mapping` is `default` or `custom`;
 the dock uses matching instructions. Invalid output or a thrown mapper error
 releases gamepad holds, preserves other sources, and exposes `state.gamepad.error`.
 The mapper can be corrected while the emulator runs.
@@ -88,7 +107,7 @@ show its gamepad and joystick chooser:
 ```js
 connectButton.addEventListener('click', async () => {
     await emulator.connectGamepadHid();
-    // Connection does not enable capture or change the joystick port.
+    // Capture starts automatically; an explicit Off choice is respected.
 });
 // Explicitly close a direct connection when it is no longer wanted:
 await emulator.disconnectGamepadHid();
@@ -140,7 +159,8 @@ show an error; a later valid report can recover. Other input sources keep workin
 Hosts can compose their factory with the exported `createHidGamepadDecoder`
 from `gamepad-hid-reports.js` for built-in descriptors/profiles. The first connection
 attempt owns its options until it finishes; disconnect before choosing different
-options. Nothing changes capture automatically.
+options. Successful connections follow the capture policy; cancellation and
+failure preserve the current capture settings.
 
 ### Dock content and visibility
 
@@ -203,8 +223,8 @@ or electrical noise.
 ## Design decision
 
 Chosen from the thumbnail exploration: **Dock**. A joined pair of compact icon
-thumbnails reveals device details on selection, with an explicit capture
-switch. The outside button inherits the parent toolbar's dimensions and style.
+thumbnails reveals device details on selection, with a capture
+switch. Controllers start capture on connection by default. The outside button inherits the parent toolbar's dimensions and style.
 The in-frame controls use the supplied gamepad and mouse icons, 36px faces and
 44px hit targets. Entrance is 180ms with a 45ms stagger from the right and 24px
 travel; exit is 130ms. Only transform and opacity animate. Keyboard activation
