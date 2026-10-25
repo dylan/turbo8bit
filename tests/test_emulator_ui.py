@@ -104,6 +104,40 @@ def emulator_ui():
                 }))
             };
         }
+        var proControllerInputs = [];
+        var ProControllerInput = class {
+            constructor(onChange) {
+                this.onChange = onChange;
+                this.connected = false;
+                this.ready = false;
+                this.gamepad = null;
+                proControllerInputs.push(this);
+            }
+            async connect() {
+                const devices = await navigator.hid.requestDevice();
+                if (!devices.length) return false;
+                this.connected = true;
+                this.ready = false;
+                this.gamepad = standardGamepad();
+                this.gamepad.id = devices[0].productName + ' (WebHID)';
+                this.onChange();
+                return true;
+            }
+            async disconnect() {
+                this.connected = false;
+                this.ready = false;
+                this.gamepad = null;
+                this.onChange();
+            }
+            report(axes = [0, 0], pressed = []) {
+                const first = !this.ready;
+                const id = this.gamepad.id;
+                this.gamepad = standardGamepad(axes, pressed);
+                this.gamepad.id = id;
+                this.ready = true;
+                if (first) this.onChange();
+            }
+        };
         function activateGamepad(port = 2) {
             emulator.enableKeyboard();
             emulator.running = true;
@@ -406,12 +440,17 @@ def test_gamepad_selects_the_first_connected_standard_pad_from_sparse_slots(
         disconnected.connected = false;
         var unsupported = standardGamepad([1, 0]);
         unsupported.mapping = '';
+        unsupported.id = 'Unmapped controller';
         gamepads = [null, disconnected, unsupported,
             standardGamepad([-1, 0]), standardGamepad([1, 0])];
+        gamepads[3].id = 'First standard controller';
         emulator.pollGamepad();
         """)
     assert ctx.eval("emulator.machine.joystick.has('2,left')")
     assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert (
+        ctx.eval("emulator.getInputState().gamepad.name") == "First standard controller"
+    )
     ctx.eval("gamepads.length = 3; emulator.pollGamepad();")
     assert ctx.eval("emulator.machine.joystick.size") == 0
 
@@ -630,7 +669,7 @@ def test_input_snapshots_notify_only_when_state_changes_and_preserve_status_text
     assert ctx.eval("emulator.gamepadConnection") == "waiting"
 
 
-def test_gamepad_api_is_not_queried_until_controls_are_enabled(emulator_ui):
+def test_gamepad_api_is_not_queried_before_explicit_discovery_or_capture(emulator_ui):
     ctx = emulator_ui
     ctx.eval("""
         var queries = 0;
@@ -639,6 +678,8 @@ def test_gamepad_api_is_not_queried_until_controls_are_enabled(emulator_ui):
             return [standardGamepad([1, 0])];
         };
         emulator.enableKeyboard();
+        dispatch(windowListeners, 'gamepadconnected');
+        dispatch(windowListeners, 'gamepaddisconnected');
         emulator.running = true;
         emulator.setActiveJoystick(2);
         emulator.pollGamepad();
@@ -649,6 +690,8 @@ def test_gamepad_api_is_not_queried_until_controls_are_enabled(emulator_ui):
     assert ctx.eval("emulator.gamepadConnection") == "off"
     assert ctx.eval("queries") == 0
     assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("(windowListeners.get('gamepadconnected') || []).length") == 0
+    assert ctx.eval("(windowListeners.get('gamepaddisconnected') || []).length") == 0
 
 
 @pytest.mark.parametrize(("selected", "expected"), [(0, 2), (1, 1), (2, 2)])
@@ -1170,24 +1213,67 @@ def test_mouse_ignores_touch_invalid_motion_and_uncaptured_context_menus(emulato
     assert not ctx.eval("nativeMenu.defaultPrevented")
 
 
-def test_mouse_port_guard_and_disabling_preserve_port_two_input(emulator_ui):
+def test_mouse_toggle_preserves_port_one_keyboard_and_gamepad_holds(emulator_ui):
     ctx = emulator_ui
     ctx.eval("""
         var pad = activateGamepad(1); pad.axes = [1, 0];
-        emulator.pollGamepad(); emulator.setMouseEnabled(true);
-        """)
-    assert ctx.eval("emulator.activeJoystick") == 2
-    assert not ctx.eval("emulator.machine.joystick.has('1,right')")
-    ctx.eval("""
         emulator.pollGamepad();
         emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
-        emulator.setActiveJoystick(1);
-        emulator.setMouseEnabled(false);
+        emulator.setMouseEnabled(true);
         """)
-    assert ctx.eval("emulator.activeJoystick") == 2
-    assert ctx.eval("emulator.machine.joystick.has('2,right')")
-    assert ctx.eval("emulator.machine.joystick.has('2,up')")
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert ctx.eval("emulator.machine.joystick.has('1,right')")
+    assert ctx.eval("emulator.machine.joystick.has('1,up')")
+    ctx.eval("emulator.setMouseEnabled(false);")
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert ctx.eval("emulator.machine.joystick.has('1,right')")
+    assert ctx.eval("emulator.machine.joystick.has('1,up')")
     assert ctx.eval("emulator.gamepadEnabled")
+
+
+def test_selecting_joystick_one_keeps_mouse_buttons_and_queued_motion(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        emulator.setActiveJoystick(2);
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 5, 4));
+        emulator.setActiveJoystick(1);
+        """)
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert ctx.eval("emulator.mouseEnabled && emulator.machine.mouseEnabled")
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    ctx.eval("emulator.runOneFrame();")
+    assert ctx.eval("JSON.stringify(emulator.machine.mouseMoves)") == "[[5,4]]"
+
+
+def test_port_one_gamepad_keyboard_and_mouse_release_independently(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var pad = activateGamepad(1); pad.buttons[0].pressed = true;
+        emulator.pollGamepad();
+        emulator.handleKeyPress(keyEvent(' ', 'Space'));
+        """)
+    activate_mouse(ctx)
+    ctx.eval("""
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        pad.buttons[0].pressed = false;
+        emulator.pollGamepad();
+        """)
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert ctx.eval("emulator.machine.joystick.has('1,fire')")
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    ctx.eval("""
+        emulator.runOneFrame();
+        emulator.handleKeyRelease(keyEvent(' ', 'Space'));
+        """)
+    assert not ctx.eval("emulator.machine.joystick.has('1,fire')")
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    ctx.eval("""
+        var release = mouseEvent(); release.buttons = 0;
+        dispatch(windowListeners, 'pointerup', release);
+        """)
+    assert ctx.eval("emulator.machine.mouseButtons.size") == 0
 
 
 @pytest.mark.parametrize("final_button", [1, 2])
@@ -1237,3 +1323,361 @@ def test_unowned_mouse_release_keeps_the_native_event_untouched(emulator_ui):
         dispatch(windowListeners, 'pointerup', release);
         """)
     assert not ctx.eval("release.defaultPrevented")
+
+
+@pytest.mark.parametrize("port", [0, 1, 2])
+def test_explicit_gamepad_discovery_detects_without_capture_or_port_changes(
+    emulator_ui, port
+):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        emulator.enableKeyboard(); emulator.running = true;
+        emulator.setActiveJoystick({port});
+        var pad = standardGamepad([1, -1], [0]); pad.id = 'Controller';
+        var queries = 0;
+        navigator.getGamepads = () => {{ queries++; return [null, pad]; }};
+        emulator.pollGamepad();
+        emulator.getInputState();
+        """)
+    assert ctx.eval("queries") == 0
+    ctx.eval("emulator.startGamepadDiscovery();")
+    assert ctx.eval("queries") == 1
+    assert ctx.eval("emulator.activeJoystick") == port
+    assert not ctx.eval("emulator.gamepadEnabled")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "Controller"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("pad.id = 'Reconnected'; emulator.pollGamepad();")
+    assert ctx.eval("queries") == 2
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "Reconnected"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+def test_discovery_failure_does_not_enable_capture_or_change_the_port(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        emulator.enableKeyboard(); emulator.running = true;
+        emulator.setActiveJoystick(1);
+        navigator.getGamepads = () => { throw new Error('SecurityError'); };
+        emulator.startGamepadDiscovery();
+        """)
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert not ctx.eval("emulator.gamepadEnabled")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "unavailable"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+@pytest.mark.parametrize(
+    "start", ["emulator.startGamepadDiscovery()", "emulator.setGamepadEnabled(true)"]
+)
+def test_discovery_observes_connection_events_while_stopped_without_keyboard(
+    emulator_ui, start
+):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        {start};
+        """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "waiting"
+    ctx.eval("""
+        var pad = standardGamepad([1, 0], [0]); pad.id = 'Later controller';
+        gamepads = [null, pad];
+        dispatch(windowListeners, 'gamepadconnected');
+        """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "Later controller"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("gamepads = []; dispatch(windowListeners, 'gamepaddisconnected');")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "waiting"
+    assert ctx.eval("emulator.getInputState().gamepad.name") == ""
+    assert not ctx.eval("emulator.keyboardEnabled || emulator.running")
+    assert ctx.eval("scheduledFrames.size + scheduledTimers.size") == 0
+
+
+def test_repeated_discovery_and_capture_install_one_connection_observer(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        emulator.startGamepadDiscovery();
+        emulator.startGamepadDiscovery();
+        emulator.setGamepadEnabled(true);
+        emulator.setGamepadEnabled(true);
+        emulator.enableKeyboard();
+        emulator.enableKeyboard();
+        emulator.setGamepadEnabled(false);
+        var queries = 0;
+        navigator.getGamepads = () => { queries++; return gamepads; };
+        dispatch(windowListeners, 'gamepadconnected');
+        """)
+    assert ctx.eval("queries") == 1
+    assert ctx.eval("windowListeners.get('gamepadconnected').length") == 1
+    assert ctx.eval("windowListeners.get('gamepaddisconnected').length") == 1
+    ctx.eval("dispatch(windowListeners, 'gamepaddisconnected');")
+    assert ctx.eval("queries") == 2
+    ctx.eval("emulator.running = true; emulator.loop();")
+    assert ctx.eval("queries") == 3
+    assert ctx.eval("scheduledFrames.size") == 1
+    assert ctx.eval("scheduledTimers.size") == 0
+
+
+def test_unsupported_controller_keeps_its_browser_identity_without_forwarding_input(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval("""
+        activateGamepad();
+        var raw = standardGamepad([1, -1], [0]);
+        raw.mapping = ''; raw.id = 'Raw controller';
+        var disconnected = standardGamepad(); disconnected.connected = false;
+        gamepads = [null, disconnected, raw, { connected: true, id: 'Other raw' }];
+        emulator.pollGamepad();
+        var changes = [];
+        emulator.onInputChange(state => changes.push(state));
+        """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "unsupported"
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "Raw controller"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("raw.id = 'Renamed raw controller'; emulator.pollGamepad();")
+    assert ctx.eval("changes.length") == 1
+    assert ctx.eval("changes[0].gamepad.name") == "Renamed raw controller"
+    assert ctx.eval("changes[0].gamepad.connection") == "unsupported"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+
+
+def connect_hid(ctx):
+    ctx.eval("""
+        navigator.hid = {
+            requestDevice() { return Promise.resolve([{ productName: 'Pro Controller' }]); }
+        };
+        var hidResult = null;
+        emulator.connectGamepadHid().then(result => { hidResult = result; });
+        """)
+    assert ctx.eval("hidResult") is True
+
+
+def test_hid_is_lazy_and_requests_only_in_the_explicit_connection_call(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var requests = 0, enumerations = 0;
+        navigator.hid = {
+            requestDevice() { requests++; return Promise.resolve([]); },
+            getDevices() { enumerations++; return Promise.resolve([]); }
+        };
+        emulator.enableKeyboard(); emulator.running = true;
+        emulator.getInputState(); emulator.pollGamepad(); emulator.loop();
+        emulator.startGamepadDiscovery(); emulator.setGamepadEnabled(true);
+        """)
+    assert ctx.eval("proControllerInputs.length") == 0
+    assert ctx.eval("requests + enumerations") == 0
+    assert ctx.eval("emulator.getInputState().gamepad.hidAvailable")
+    ctx.eval("""
+        var requestedSynchronously = false;
+        emulator.connectGamepadHid();
+        requestedSynchronously = requests === 1;
+        """)
+    assert ctx.eval("requestedSynchronously")
+    assert ctx.eval("proControllerInputs.length") == 1
+    assert ctx.eval("enumerations") == 0
+
+
+def test_connecting_hid_does_not_enable_capture_change_port_or_release_other_sources(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        emulator.setActiveJoystick(1);
+        emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
+        emulator.handleKeyPress(keyEvent('a', 'KeyA'));
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        dispatch(canvasListeners, 'pointermove', mouseEvent(0, 5, 4));
+        """)
+    connect_hid(ctx)
+    assert not ctx.eval("emulator.getInputState().gamepad.enabled")
+    assert ctx.eval("emulator.getInputState().gamepad.hidConnected")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert ctx.eval("emulator.getInputState().gamepad.transport") == "hid"
+    assert not ctx.eval("emulator.getInputState().gamepad.ready")
+    assert (
+        ctx.eval("emulator.getInputState().gamepad.name") == "Pro Controller (WebHID)"
+    )
+    assert "Waiting for controller input" in ctx.eval(
+        "emulator.getInputState().gamepad.status"
+    )
+    assert "Capture is off" in ctx.eval("emulator.getInputState().gamepad.status")
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert ctx.eval("document.activeElement === canvas")
+    assert ctx.eval("emulator.machine.joystick.has('1,up')")
+    assert ctx.eval("emulator.machine.keys.has('1,2')")
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    ctx.eval("emulator.runOneFrame();")
+    assert ctx.eval("JSON.stringify(emulator.machine.mouseMoves)") == "[[5,4]]"
+
+
+def test_hid_fallback_requires_first_report_and_explicit_capture(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval(
+        "emulator.enableKeyboard(); emulator.running = true; emulator.setActiveJoystick(1);"
+    )
+    connect_hid(ctx)
+    ctx.eval("""
+        var hid = proControllerInputs[0];
+        hid.gamepad.axes = [1, 0];
+        hid.gamepad.buttons[0].pressed = true;
+        emulator.setGamepadEnabled(true);
+        """)
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert not ctx.eval("emulator.getInputState().gamepad.ready")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("emulator.setGamepadEnabled(false); hid.report([1, 0], [0]);")
+    assert ctx.eval("emulator.getInputState().gamepad.ready")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    ctx.eval("emulator.setGamepadEnabled(true);")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+    assert ctx.eval("emulator.machine.joystick.has('1,right')")
+    assert ctx.eval("emulator.machine.joystick.has('1,fire')")
+    ctx.eval("document.activeElement = {}; dispatch(canvasListeners, 'blur');")
+    assert ctx.eval("emulator.machine.joystick.size") == 0
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "connected"
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "delete navigator.getGamepads",
+        "navigator.getGamepads = () => { throw new Error('SecurityError'); }",
+    ],
+)
+def test_hid_fallback_works_when_the_gamepad_api_is_unavailable(emulator_ui, api):
+    ctx = emulator_ui
+    ctx.eval(f"""
+        emulator.enableKeyboard(); emulator.running = true;
+        emulator.setGamepadEnabled(true);
+        {api};
+        """)
+    connect_hid(ctx)
+    ctx.eval("proControllerInputs[0].report([-1, 0], [0]);")
+    assert ctx.eval("emulator.getInputState().gamepad.connection") == "active"
+    assert ctx.eval("emulator.getInputState().gamepad.transport") == "hid"
+    assert ctx.eval("emulator.machine.joystick.has('2,left')")
+    assert ctx.eval("emulator.machine.joystick.has('2,fire')")
+
+
+def test_native_standard_gamepad_has_priority_and_survives_hid_disconnect(emulator_ui):
+    ctx = emulator_ui
+    ctx.eval("""
+        var native = activateGamepad(); native.id = 'Native controller';
+        native.axes = [1, 0]; emulator.pollGamepad();
+        """)
+    connect_hid(ctx)
+    ctx.eval("proControllerInputs[0].report([-1, 0], [0]);")
+    assert ctx.eval("emulator.getInputState().gamepad.transport") == "gamepad"
+    assert ctx.eval("emulator.getInputState().gamepad.name") == "Native controller"
+    assert ctx.eval("emulator.getInputState().gamepad.ready")
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,left')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,fire')")
+    ctx.eval("emulator.disconnectGamepadHid();")
+    assert not ctx.eval("emulator.getInputState().gamepad.hidConnected")
+    assert ctx.eval("emulator.getInputState().gamepad.transport") == "gamepad"
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+
+
+def test_hid_takes_over_when_native_gamepad_disconnects_without_combining_holds(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval("var native = activateGamepad(); native.axes = [1, 0];")
+    connect_hid(ctx)
+    ctx.eval("""
+        proControllerInputs[0].report([-1, 0], [0]);
+        gamepads = []; dispatch(windowListeners, 'gamepaddisconnected');
+        """)
+    assert ctx.eval("emulator.getInputState().gamepad.transport") == "hid"
+    assert ctx.eval("emulator.machine.joystick.has('2,left')")
+    assert ctx.eval("emulator.machine.joystick.has('2,fire')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+
+
+def test_hid_disconnect_releases_only_its_joystick_holds(emulator_ui):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval("""
+        emulator.setGamepadEnabled(true);
+        emulator.handleKeyPress(keyEvent('ArrowRight', 'ArrowRight'));
+        emulator.handleKeyPress(keyEvent('a', 'KeyA'));
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        """)
+    connect_hid(ctx)
+    ctx.eval("""
+        proControllerInputs[0].report([1, -1], [0]);
+        emulator.disconnectGamepadHid();
+        """)
+    assert ctx.eval("emulator.gamepadEnabled")
+    assert ctx.eval("emulator.machine.joystick.has('2,right')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,up')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,fire')")
+    assert ctx.eval("emulator.machine.keys.has('1,2')")
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    assert ctx.eval("emulator.getInputState().gamepad.transport") is None
+    assert not ctx.eval("emulator.getInputState().gamepad.ready")
+
+
+@pytest.mark.parametrize("capture", [False, True])
+@pytest.mark.parametrize("outcome", ["cancel", "error"])
+def test_hid_cancel_and_failure_preserve_capture_and_other_input_sources(
+    emulator_ui, capture, outcome
+):
+    ctx = emulator_ui
+    activate_mouse(ctx)
+    ctx.eval(f"""
+        emulator.setActiveJoystick(1);
+        emulator.setGamepadEnabled({str(capture).lower()});
+        emulator.handleKeyPress(keyEvent('ArrowUp', 'ArrowUp'));
+        emulator.handleKeyPress(keyEvent('a', 'KeyA'));
+        dispatch(canvasListeners, 'pointerdown', mouseEvent());
+        navigator.hid = {{ requestDevice() {{
+            return {'Promise.resolve([])' if outcome == 'cancel' else "Promise.reject(new Error('Could not open controller'))"};
+        }} }};
+        var result = null, error = null;
+        emulator.connectGamepadHid().then(value => {{ result = value; }},
+            reason => {{ error = reason.message; }});
+        """)
+    assert ctx.eval("emulator.gamepadEnabled") is capture
+    assert ctx.eval("emulator.activeJoystick") == 1
+    assert not ctx.eval("emulator.getInputState().gamepad.hidConnected")
+    assert ctx.eval("emulator.machine.joystick.has('1,up')")
+    assert ctx.eval("emulator.machine.keys.has('1,2')")
+    assert ctx.eval("emulator.machine.mouseButtons.has('left')")
+    if outcome == "cancel":
+        assert ctx.eval("result") is False
+        assert ctx.eval("error") is None
+    else:
+        assert ctx.eval("result") is None
+        assert ctx.eval("error") == "Could not open controller"
+
+
+def test_hid_reports_update_input_without_emitting_repeated_state_notifications(
+    emulator_ui,
+):
+    ctx = emulator_ui
+    ctx.eval(
+        "emulator.enableKeyboard(); emulator.running = true; emulator.setGamepadEnabled(true);"
+    )
+    connect_hid(ctx)
+    ctx.eval("""
+        var changes = [];
+        emulator.onInputChange(state => changes.push(state));
+        var hid = proControllerInputs[0];
+        hid.report([1, 0]);
+        hid.report([-1, 0]);
+        emulator.pollGamepad(); emulator.pollGamepad();
+        """)
+    assert ctx.eval("changes.length") == 1
+    assert ctx.eval("changes[0].gamepad.ready")
+    assert ctx.eval("changes[0].gamepad.connection") == "active"
+    assert ctx.eval("emulator.machine.joystick.has('2,left')")
+    assert not ctx.eval("emulator.machine.joystick.has('2,right')")
+    ctx.eval("emulator.disconnectGamepadHid(); emulator.pollGamepad();")
+    assert ctx.eval("changes.length") == 2
+    assert not ctx.eval("changes[1].gamepad.hidConnected")
+    assert ctx.eval("emulator.machine.joystick.size") == 0

@@ -814,6 +814,26 @@ body {
     text-wrap: pretty;
 }
 .input-controls__name[hidden] { display: none; }
+.input-controls__direct { margin-top: 12px; }
+.input-controls__direct[hidden] { display: none; }
+.input-controls__direct-button {
+    width: 100%;
+    min-height: 44px;
+    padding: 9px 12px;
+    border: 1px solid var(--ui-line-strong);
+    border-radius: 7px;
+    background: var(--ui-raised);
+    color: var(--ui-text);
+    font: inherit;
+    text-align: center;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+.input-controls__direct-button:disabled { color: var(--ui-text-dim); cursor: wait; }
+.input-controls__direct-help, .input-controls__direct-error { margin: 7px 0 0; font-size: 11px; overflow-wrap: anywhere; text-wrap: pretty; }
+.input-controls__direct-help { color: var(--ui-text-dim); }
+.input-controls__direct-error { color: var(--tint-red); }
+.input-controls__direct-error[hidden] { display: none; }
 .input-controls__capture {
     display: flex;
     align-items: center;
@@ -879,8 +899,10 @@ body {
     .input-controls__device:hover .input-controls__face { background: var(--ui-hover); color: var(--ui-text); }
     .input-controls__close:hover { background: var(--ui-raised); color: var(--ui-text); }
     .input-controls__capture:hover .input-controls__capture-right { color: var(--ui-text); }
+    .input-controls__direct-button:not(:disabled):hover { background: var(--ui-hover); }
 }
 .input-controls__device:active .input-controls__face { background: var(--ui-sunken); }
+.input-controls__direct-button:not(:disabled):active { background: var(--ui-sunken); }
 @media (prefers-reduced-motion: reduce) {
     .input-controls__tray, .input-controls__face, .input-controls__detail,
     .input-controls[data-open="true"] .input-controls__tray,

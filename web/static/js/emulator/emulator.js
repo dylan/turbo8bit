@@ -28,6 +28,7 @@
 import { C64Machine } from './machine.js';
 import { ChipModel, SamplingMethod } from './sid.js';
 import { VICIIRenderer } from './vic-ii.js';
+import { ProControllerInput } from './pro-controller.js';
 
 // Ring buffer between the emulation loop and the Web Audio callback. Both run
 // on the main thread, but at unrelated rates (50Hz frames vs 2048-sample
@@ -237,6 +238,9 @@ export class C64Emulator {
         this.gamepadDevice = null;
         this.gamepadAvailable = true;
         this.gamepadUnmapped = false;
+        this.gamepadHidInput = null;
+        this.gamepadTransport = null;
+        this.gamepadReady = false;
         this.mouseEnabled = false;
         this.mouseButtons = new Set();
         this.mouseDeltaX = 0;
@@ -582,7 +586,10 @@ export class C64Emulator {
         }
         return {
             gamepad: { enabled: this.gamepadEnabled, connection: this.gamepadConnection,
-                status: this.gamepadStatus, name: this.gamepadName },
+                status: this.gamepadStatus, name: this.gamepadName,
+                hidAvailable: typeof navigator !== 'undefined' && typeof navigator.hid?.requestDevice === 'function',
+                hidConnected: Boolean(this.gamepadHidInput?.connected),
+                transport: this.gamepadTransport, ready: this.gamepadReady },
             mouse: { enabled: this.mouseEnabled, captured, status }
         };
     }
@@ -761,8 +768,6 @@ export class C64Emulator {
         window.addEventListener('blur', () => this.releaseAllInput());
         this.canvas.addEventListener('focus', () => this.pollGamepad());
         window.addEventListener('focus', () => this.pollGamepad());
-        window.addEventListener('gamepadconnected', () => this.pollGamepad());
-        window.addEventListener('gamepaddisconnected', () => this.pollGamepad());
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) this.releaseAllInput();
             else this.pollGamepad();
@@ -950,12 +955,42 @@ export class C64Emulator {
         }
     }
 
+    startGamepadDiscovery() {
+        if (!this.gamepadDiscoveryStarted) {
+            this.gamepadDiscoveryStarted = true;
+            window.addEventListener('gamepadconnected', () => this.pollGamepad());
+            window.addEventListener('gamepaddisconnected', () => this.pollGamepad());
+        }
+        this.pollGamepad();
+    }
+
     setGamepadEnabled(enabled) {
         enabled = Boolean(enabled);
         if (enabled && !this.activeJoystick) this.setActiveJoystick(2);
         this.gamepadEnabled = enabled;
-        if (enabled) this.gamepadDiscoveryStarted = true;
-        this.pollGamepad();
+        if (enabled) this.startGamepadDiscovery();
+        else this.pollGamepad();
+    }
+
+    async connectGamepadHid() {
+        this.startGamepadDiscovery();
+        if (!this.gamepadHidInput) {
+            this.gamepadHidInput = new ProControllerInput(() => this.pollGamepad());
+        }
+        try {
+            return await this.gamepadHidInput.connect();
+        } finally {
+            this.pollGamepad();
+        }
+    }
+
+    async disconnectGamepadHid() {
+        if (!this.gamepadHidInput) return;
+        try {
+            await this.gamepadHidInput.disconnect();
+        } finally {
+            this.pollGamepad();
+        }
     }
 
     // Observe connection after the first opt-in, independently of capture.
@@ -970,12 +1005,17 @@ export class C64Emulator {
                 available = false;
             }
         }
-        const pad = pads.find(candidate => candidate?.connected && candidate.mapping === 'standard');
+        const connected = pads.find(candidate => candidate?.connected);
+        const nativePad = pads.find(candidate => candidate?.connected && candidate.mapping === 'standard');
+        const hidConnected = Boolean(this.gamepadHidInput?.connected);
+        const pad = nativePad ?? (hidConnected ? this.gamepadHidInput.gamepad : null);
         this.gamepadDevice = pad ?? null;
+        this.gamepadTransport = nativePad ? 'gamepad' : hidConnected ? 'hid' : null;
+        this.gamepadReady = Boolean(nativePad || (hidConnected && this.gamepadHidInput.ready));
         this.gamepadAvailable = available;
-        this.gamepadName = pad?.id ?? '';
+        this.gamepadName = (pad ?? connected)?.id ?? '';
         const buttons = new Set();
-        if (this.gamepadEnabled && pad && this.inputCaptured() && this.activeJoystick > 0) {
+        if (this.gamepadEnabled && pad && this.gamepadReady && this.inputCaptured() && this.activeJoystick > 0) {
             const held = index => pad.buttons[index]?.pressed;
             const x = pad.axes[0] ?? 0, y = pad.axes[1] ?? 0;
             if (x < -GAMEPAD_DEAD_ZONE || held(14)) buttons.add('left');
@@ -986,7 +1026,7 @@ export class C64Emulator {
         }
         this.setGamepadButtons(buttons);
         if (!this.inputCaptured()) this.releaseMouse();
-        this.gamepadUnmapped = pads.some(candidate => candidate?.connected) && !pad;
+        this.gamepadUnmapped = Boolean(connected) && !pad;
         this.updateInputState();
     }
 
@@ -995,7 +1035,7 @@ export class C64Emulator {
         if (!this.gamepadDiscoveryStarted) {
             connection = 'off';
             message = 'Gamepad capture is off.';
-        } else if (!this.gamepadAvailable) {
+        } else if (!this.gamepadAvailable && !this.gamepadDevice) {
             connection = 'unavailable';
             message = 'Gamepad controls are unavailable in this browser.';
         } else if (!this.gamepadDevice) {
@@ -1004,8 +1044,11 @@ export class C64Emulator {
                 ? 'This controller has no standard mapping. Use a standard gamepad.'
                 : 'Waiting for a controller. Press a face button so this browser can detect it.';
         } else {
-            connection = this.gamepadEnabled && this.inputCaptured() && this.activeJoystick ? 'active' : 'connected';
-            if (!this.gamepadEnabled) message = 'Controller connected. Capture is off.';
+            connection = this.gamepadEnabled && this.gamepadReady && this.inputCaptured() && this.activeJoystick ? 'active' : 'connected';
+            if (!this.gamepadReady) {
+                message = 'Pro Controller connected. Waiting for controller input.';
+                if (!this.gamepadEnabled) message += ' Capture is off.';
+            } else if (!this.gamepadEnabled) message = 'Controller connected. Capture is off.';
             else if (!this.activeJoystick) message = 'Gamepad connected. Joystick mode is off.';
             else if (this.paused) message = 'Gamepad connected. Resume to play.';
             else if (!this.running) message = 'Gamepad connected. Start the C64 to play.';
@@ -1023,7 +1066,6 @@ export class C64Emulator {
             this.releaseMouse();
             this.mouseEnabled = enabled;
             this.machine.setMouseEnabled(enabled);
-            if (enabled && this.activeJoystick === 1) this.setActiveJoystick(2);
         }
         this.updateInputState();
     }
@@ -1123,7 +1165,6 @@ export class C64Emulator {
     // @param {number} port - Joystick port (1 or 2), or 0 to disable
     //
     setActiveJoystick(port) {
-        if (this.mouseEnabled && port === 1) port = 2;
         if (port === this.activeJoystick) return;
         this.releaseAllKeys();
         this.activeJoystick = port;

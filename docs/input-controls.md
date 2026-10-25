@@ -10,20 +10,43 @@ capture on focuses the C64 screen; input releases when the screen loses focus.
 The emulator handles input independently of the optional dock:
 
 ```js
+emulator.startGamepadDiscovery(); // Detect without forwarding input.
 emulator.setGamepadEnabled(true);
 emulator.setMouseEnabled(true);
 const state = emulator.getInputState();
 const unsubscribe = emulator.onInputChange(state => {
-    // state.gamepad: enabled, connection, status, name
+    // state.gamepad: enabled, connection, status, name, transport, ready,
+    //                hidAvailable, hidConnected
     // state.mouse: enabled, captured, status
 });
 unsubscribe();
 ```
 
-Both devices start disabled. Gamepad discovery starts on the first explicit
-enable request. It continues observing browser connection afterwards, including
-while capture is off. A connected indicator means the browser exposes a usable
+Both devices start disabled. Selecting the Gamepad thumbnail starts discovery
+without enabling capture or changing the joystick port. A host can start it
+explicitly with `startGamepadDiscovery()`; enabling gamepad input also starts
+discovery. Observation continues afterwards, including while capture is off. A connected indicator means the browser exposes a usable
 controller; pairing with the computer happens in the operating system.
+
+On browsers with WebHID, a Pro Controller can also connect directly. Invoke
+this from a user click so the browser can show its device chooser:
+
+```js
+connectButton.addEventListener('click', async () => {
+    await emulator.connectGamepadHid();
+    // Connection does not enable capture or change the joystick port.
+});
+// Explicitly close a direct connection when it is no longer wanted:
+await emulator.disconnectGamepadHid();
+```
+
+The optional adapter requests only Nintendo `057e:2009`. It reads verified
+`0x21`/`0x30` input reports and sends no initialization, rumble, calibration or
+feature commands. Stick normalization uses a fixed center. An open connection
+is not marked active until a supported input report arrives; unverified modes
+such as `0x3f` remain unready. The browser's standard Gamepad input takes
+priority if both paths expose a controller. Capture and mouse/keyboard sources
+remain independent through connection changes and cancellation.
 
 A host can use its own button and switch the overlay on or off:
 
@@ -58,10 +81,12 @@ it. Unsupported mappings and unavailable browser access have separate states.
 
 Mouse input emulates a proportional Commodore 1351 on port 1. Movement and left
 and right buttons work in programs that support that mouse. It does not turn an
-ordinary keyboard or joystick game into a mouse-controlled game. Enabling the
-mouse moves an existing joystick-1 selection to port 2 to avoid sharing those
-pins. The machine models nominal position counters and buttons; it does not
-simulate SID analog conversion delay or electrical noise.
+ordinary keyboard or joystick game into a mouse-controlled game. Mouse, gamepad
+and keyboard can be enabled together. They may share port 1: their digital
+button lines combine, and releasing one source preserves the others. Enabling
+the mouse never changes the selected joystick port. The machine models nominal
+position counters and buttons; it does not simulate SID analog conversion delay
+or electrical noise.
 
 ## Design decision
 

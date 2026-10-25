@@ -30,18 +30,23 @@ alongside them.
   selectors and other page controls retain their normal keyboard behavior.
   **Ctrl+V** on the screen types the clipboard into the C64.
 - Select **Input controls** in the screen toolbar to open the input dock.
-  Choose **Gamepad** or **1351 mouse**, then turn capture on. Status and
+  Choose **Gamepad** to detect a controller without capturing it, or choose
+  **1351 mouse**, then turn capture on for each device you want to use. Status and
   instructions stay inside the emulator, including in full screen. A detected
   controller keeps its connected indicator when capture is off.
 - Standard gamepads use the selected **JOY 1** or **JOY 2** port in BASIC,
   defaulting to joystick 2; Games uses joystick 2. The d-pad or left stick moves
   and any face button fires. Pair the controller in your computer's settings,
-  then press a face button so the browser can detect it.
+  then press a face button so the browser can detect it. In browsers with WebHID,
+  **Connect Pro Controller** offers a direct connection for a Nintendo Switch
+  Pro Controller that automatic detection cannot expose. The browser asks you
+  to choose the device; capture remains a separate switch.
 - Mouse input emulates a **Commodore 1351 on port 1**, including left and right
   buttons. The running program must support a 1351 mouse. Keyboard, gamepad and
   mouse input release on focus loss, hidden tabs, reset and stop; gamepad and
   mouse also release on pause. Input sources are opt-in and capture only while
-  the C64 screen is focused and running. See the [input controls API](docs/input-controls.md)
+  the C64 screen is focused and running. Enabled sources work together,
+  including when mouse and joystick share port 1. See the [input controls API](docs/input-controls.md)
   to enable devices or show and hide the overlay from JavaScript.
 - The screen toolbar also pauses, runs in **Turbo**, adds a **CRT** look, saves
   a snapshot and goes full screen. Pointing at the screen shows the **inspector**:
@@ -271,7 +276,7 @@ and cartridge code are all covered without a browser.
 Some cartridge tests skip unless the matching CRT dump is present locally — CRT
 files live in Cloud Storage rather than in the repo.
 
-Current baseline: **773 passed, 25 skipped, 0 failed** (798 collected), with no
+Current baseline: **840 passed, 25 skipped, 0 failed** (865 collected), with no
 unchecked boolean-return test warnings.
 
 The suite also covers browser-wrapper audio/input/lifecycle behavior using

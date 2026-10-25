@@ -7,16 +7,15 @@ function gamepadInfo({ gamepad: pad }) {
     const connected = ['active', 'connected'].includes(pad.connection);
     const connection = connected ? 'Connected'
         : { off: 'Not checked', waiting: 'Waiting for browser', unsupported: 'Unsupported mapping', unavailable: 'Unavailable' }[pad.connection];
-    let guidance = 'Turn capture on to look for a controller. Pair it in your computer’s settings first if needed.';
+    let guidance = 'Focus this page and press a controller face button. Pair it in your computer’s settings if needed. If already paired and still not detected, try USB or another browser.';
     if (connected) guidance = !pad.enabled ? 'This browser can see your controller. Turn capture on when you want to play.'
         : pad.connection === 'active' ? 'D-pad or left stick moves. Any face button fires.' : pad.status;
-    else if (pad.connection === 'waiting') guidance = 'Pair your controller in your computer’s settings, then press a face button so this browser can see it.';
     else if (pad.connection === 'unsupported') guidance = 'This browser sees the controller, but its button mapping is unsupported. Use another controller or the keyboard.';
     else if (pad.connection === 'unavailable') guidance = 'This browser cannot access a gamepad. You can still use the keyboard.';
     return {
         title: 'Gamepad', subtitle: 'Controller input', connection, name: pad.name, guidance,
         enabled: pad.enabled, active: pad.enabled && pad.connection === 'active',
-        footnote: 'Connection and capture are separate. Turn capture off to keep playing with the keyboard.'
+        footnote: 'Connection and capture are separate. Enabled inputs work together while the C64 screen has focus.'
     };
 }
 
@@ -54,6 +53,11 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
             <div class="input-controls__detail-body">
                 <div class="input-controls__connection"><span data-input-connection-label>Connection</span><strong data-input-connection></strong></div>
                 <p class="input-controls__name" data-input-name hidden></p>
+                <div class="input-controls__direct" data-input-hid hidden>
+                    <button type="button" class="input-controls__direct-button" data-input-hid-toggle aria-describedby="${id}-hid-help">Connect Pro Controller</button>
+                    <p class="input-controls__direct-help" id="${id}-hid-help" data-input-hid-help></p>
+                    <p class="input-controls__direct-error" id="${id}-hid-error" data-input-hid-error role="alert" hidden></p>
+                </div>
                 <button type="button" class="input-controls__capture" role="switch" aria-checked="false" data-input-capture><span>Capture input</span><span class="input-controls__capture-right"><span data-input-capture-label>Off</span><span class="input-controls__switch" aria-hidden="true"></span></span></button>
                 <p class="input-controls__guidance" data-input-guidance></p>
                 <p class="input-controls__footnote" data-input-footnote></p>
@@ -66,6 +70,10 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
     const detailBody = overlay.querySelector('.input-controls__detail-body');
     const devices = [...overlay.querySelectorAll('[data-input-device]')];
     const capture = overlay.querySelector('[data-input-capture]');
+    const direct = overlay.querySelector('[data-input-hid]');
+    const directToggle = overlay.querySelector('[data-input-hid-toggle]');
+    const directHelp = overlay.querySelector('[data-input-hid-help]');
+    const directError = overlay.querySelector('[data-input-hid-error]');
     const feedback = overlay.querySelector('[data-input-feedback]');
     const descriptions = (canvas.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
     canvas.setAttribute('aria-describedby', [...descriptions, feedback.id].join(' '));
@@ -73,7 +81,10 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
     let available = Boolean(enabled);
     let open = false;
     let selected = null;
+    let selectionRevision = 0;
     let destroyed = false;
+    let hidPending = null;
+    let hidError = '';
     let state = emulator.getInputState();
 
     function update() {
@@ -118,6 +129,21 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
             overlay.querySelector('[data-input-guidance]').textContent = info.guidance;
             overlay.querySelector('[data-input-footnote]').textContent = info.footnote;
         }
+        const hid = state.gamepad;
+        const showDirect = visible && selected === 'gamepad' && hid.hidAvailable
+            && (hid.hidConnected || hidPending || ['waiting', 'unsupported', 'unavailable'].includes(hid.connection));
+        if (!showDirect && direct.contains(document.activeElement) && visible) capture.focus({ preventScroll: true });
+        direct.hidden = !showDirect;
+        directToggle.disabled = Boolean(hidPending);
+        directToggle.setAttribute('aria-busy', String(Boolean(hidPending)));
+        directToggle.textContent = hidPending === 'connect' ? 'Connecting…'
+            : hidPending === 'disconnect' ? 'Disconnecting…'
+            : hid.hidConnected ? 'Disconnect Pro Controller' : 'Connect Pro Controller';
+        directHelp.textContent = hid.hidConnected ? 'A direct connection is open. Capture remains a separate control.'
+            : 'Try a direct connection if automatic detection fails. Opens a browser device picker for a Nintendo Switch Pro Controller.';
+        directError.textContent = hidError;
+        directError.hidden = !hidError;
+        directToggle.setAttribute('aria-describedby', `${id}-hid-help${hidError ? ` ${id}-hid-error` : ''}`);
         const message = `Gamepad: ${pad.connection}, capture ${pad.active ? 'active' : pad.enabled ? 'on' : 'off'}. Mouse: ${mouse.connection}, capture ${mouse.active ? 'active' : mouse.enabled ? 'on' : 'off'}.`;
         if (feedback.textContent !== message) feedback.textContent = message;
     }
@@ -131,22 +157,25 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
     function setOpen(value) {
         if (destroyed) return;
         const next = available && Boolean(value);
-        const reopening = next && !open;
+        if (next === open) return;
         if (!next && overlay.contains(document.activeElement)) restoreFocus();
         open = next;
         selected = null;
+        selectionRevision++;
         update();
-        if (reopening) detailBody.scrollTop = 0;
+        if (next) detailBody.scrollTop = 0;
     }
 
     function setEnabled(value) {
         if (destroyed) return;
         const next = Boolean(value);
+        const changed = next !== available;
         if (!next && (overlay.contains(document.activeElement) || document.activeElement === trigger)) {
             canvas.focus({ preventScroll: true });
         }
         available = next;
-        setOpen(false);
+        trigger.hidden = !available;
+        if (changed) setOpen(false);
     }
 
     trigger.addEventListener('click', event => {
@@ -159,7 +188,9 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
             overlay.dataset.instant = String(event.detail === 0);
             const next = selected === button.dataset.inputDevice ? null : button.dataset.inputDevice;
             const changed = next !== null && next !== selected;
+            if (changed && next === 'gamepad') emulator.startGamepadDiscovery();
             selected = next;
+            selectionRevision++;
             update();
             if (changed) detailBody.scrollTop = 0;
         }, options);
@@ -181,9 +212,41 @@ export function attachInputControls(emulator, { frame, trigger, enabled = true }
         if (device === 'gamepad') emulator.setGamepadEnabled(next);
         else emulator.setMouseEnabled(next);
     }, options);
+    directToggle.addEventListener('click', async () => {
+        if (hidPending) return;
+        const disconnecting = state.gamepad.hidConnected;
+        const focusBeforePending = document.activeElement;
+        const revision = selectionRevision;
+        let restorePendingFocus = overlay.contains(focusBeforePending);
+        const trackFocus = event => {
+            if (![document.body, document.documentElement, focusBeforePending].includes(event.target)) restorePendingFocus = false;
+        };
+        document.addEventListener('focusin', trackFocus, options);
+        hidPending = disconnecting ? 'disconnect' : 'connect';
+        hidError = '';
+        update();
+        try {
+            if (disconnecting) await emulator.disconnectGamepadHid();
+            else await emulator.connectGamepadHid();
+        } catch (error) {
+            if (controller.signal.aborted) return;
+            hidError = `${disconnecting ? 'Disconnect' : 'Connection'} failed: ${error.message}`;
+        } finally {
+            document.removeEventListener('focusin', trackFocus);
+            if (!controller.signal.aborted) {
+                hidPending = null;
+                update();
+                if (restorePendingFocus && revision === selectionRevision && available && open && selected === 'gamepad'
+                    && [document.body, document.documentElement, focusBeforePending].includes(document.activeElement)) {
+                    (direct.hidden ? capture : directToggle).focus({ preventScroll: true });
+                }
+            }
+        }
+    }, options);
     overlay.querySelector('[data-input-detail-close]').addEventListener('click', () => {
         devices.find(button => button.dataset.inputDevice === selected).focus({ preventScroll: true });
         selected = null;
+        selectionRevision++;
         overlay.dataset.instant = 'true';
         update();
     }, options);
